@@ -1,0 +1,9 @@
+[package]
+name = "mabi_meter_core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde_json.workspace = true
+brotli.workspace = true

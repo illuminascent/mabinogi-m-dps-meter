@@ -1,0 +1,57 @@
+# Local reference material and investigation history are never published.
+/MMH-*/
+/prototypes/
+/analysis/
+/.analysis-tools/
+/docs/
+/AGENTS.md
+/assets/ui/
+/app.ico
+/native/app/assets/README.md
+
+# Build products and dependency/runtime caches.
+/.build/
+/dist/
+/.local/
+target/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.exe
+*.dll
+*.pdb
+*.obj
+*.o
+*.a
+*.lib
+*.so
+*.dylib
+
+# Recordings, raw packets, identity caches and generated audits.
+recordings/
+*.pcap
+*.pcapng
+*.etl
+*.jsonl
+*-audit.json
+*.audit.json
+*.meta.json
+identity-cache.json
+live-identity-cache.json
+window.json
+
+# Installer/archive samples and local editor/account settings.
+*.msi
+*.cab
+*.zip
+*.7z
+.env
+.env.*
+.codex/
+.agents/
+.aws/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

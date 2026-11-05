@@ -1,0 +1,2 @@
+# Only compressed frame decoding needs a Python package.
+Brotli>=1.2.0,<2

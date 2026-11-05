@@ -1,0 +1,15 @@
+[workspace]
+members = ["core", "app"]
+# Preserve the independently buildable, already validated capture boundary.
+exclude = ["capture"]
+resolver = "2"
+
+[workspace.dependencies]
+serde_json = "=1.0.145"
+brotli = "=8.0.2"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = "debuginfo"

@@ -1,0 +1,15 @@
+{
+  "combat_names": {
+    "file": "data/combat-names.json",
+    "source_package": "MMH-0.28.0-jp.4",
+    "source_resource": "MabiRoutine.combat-names.json",
+    "source_assembly_sha256": "5e2fd956ff1d84fabb189c1ed8819da2b257eed9aac74fa96922f662e3b9ddf6",
+    "method": "Static resource inspection; source binaries were never executed.",
+    "notes": "Inherited skill, effect, monster and job labels, not a verified Japanese localization. No source binary or extracted UI artwork is distributed."
+  },
+  "application_icon": {
+    "file": "../native/app/assets/app.ico",
+    "source": "User-supplied application icon",
+    "sha256": "a05bf7fef967650e2f446a4f281d6a6317e52ae17960822309b6861623f3e16c"
+  }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "mabi-meter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mabi_meter_core = { path = "../core" }
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+mabi_capture = { path = "../capture" }

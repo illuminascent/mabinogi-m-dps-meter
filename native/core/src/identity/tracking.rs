@@ -40,6 +40,8 @@ pub struct Alias {
 pub struct TrackingEvent {
     pub revision: u64, pub reason: &'static str, pub key: Option<EntityKey>, pub source: Option<Evidence>,
 }
+#[derive(Clone,Debug)]
+pub struct CandidateLink {pub old:EntityKey,pub new:EntityKey,pub source:Evidence,pub reason:&'static str}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits { pub appearances: usize, pub aliases: usize, pub voters: usize, pub events: usize }
@@ -52,25 +54,89 @@ struct Vote { count: u8, last: Evidence, kinds: BTreeSet<u8> }
 
 #[derive(Debug)]
 pub struct Tracking {
+    actor_order:BTreeMap<EntityKey,u64>,
+    pub candidates:BTreeMap<(EntityKey,EntityKey),CandidateLink>,
     current_index:IdentityIndex,retired_index:IdentityIndex,processes:BTreeSet<u64>,
     pub revision: u64,
     pub personal: Option<Character>, pub personal_source: Option<Evidence>,
     pub appearances: BTreeMap<EntityKey, SeenAppearance>,
     pub aliases: BTreeMap<(EntityKey, EntityKey), Alias>,
     pub events: VecDeque<TrackingEvent>, pub event_evictions: u64,
-    automatic: SelfBinding, operator: Option<(EntityKey, Evidence)>,
+    automatic: SelfBinding, operator: Option<(EntityKey, Evidence)>,operator_retired:bool,
     votes: BTreeMap<EntityKey, Vote>, vote_frames: BTreeMap<(u64,u64),u64>,
     groups: BTreeMap<EntityKey,EntityKey>, limits: Limits,
     wire_context: Option<(u64,u64)>,
     appearance_contexts:BTreeMap<EntityKey,(u64,u64)>,
+    closed_contexts:BTreeMap<(u64,u64),Evidence>,
 }
 impl Default for Tracking { fn default() -> Self { Self::new(Limits::default()) } }
 impl Tracking {
     pub fn new(limits: Limits) -> Self {
         Self { current_index:IdentityIndex::default(),retired_index:IdentityIndex::default(),processes:BTreeSet::new(),revision: 0,personal: None,personal_source: None,appearances: BTreeMap::new(),
-            aliases: BTreeMap::new(),events: VecDeque::new(),event_evictions: 0,
-            automatic: SelfBinding::default(),operator: None,votes: BTreeMap::new(),
+            actor_order:BTreeMap::new(),candidates:BTreeMap::new(),aliases: BTreeMap::new(),events: VecDeque::new(),event_evictions: 0,
+            closed_contexts:BTreeMap::new(),automatic: SelfBinding::default(),operator: None,operator_retired:false,votes: BTreeMap::new(),
             vote_frames: BTreeMap::new(),groups: BTreeMap::new(),limits,wire_context:None,appearance_contexts:BTreeMap::new() }
+    }
+    /// Anonymous actors have stable ordinal handles too. Names never allocate
+    /// participant identity; a supported alias only changes derived grouping.
+    pub fn observe_actor(&mut self,key:EntityKey)->Result<()> {
+        if !self.actor_order.contains_key(&key){
+            if self.actor_order.len()>=32768{return Err("participant directory capacity reached".into());}
+            self.actor_order.insert(key,self.actor_order.len() as u64+1);
+        }Ok(())
+    }
+    pub fn participant(&self,key:EntityKey)->Option<u64>{self.actor_order.get(&self.group(key)).copied()}
+    pub fn binding_context(&self,key:EntityKey)->Option<(u64,u64)>{self.appearance_contexts.get(&key).copied()}
+    pub fn personal_context(&self)->Option<(u64,u64)>{self.wire_context}
+    pub fn closed_contexts(&self)->impl Iterator<Item=((u64,u64),Evidence)>+'_ {self.closed_contexts.iter().map(|(c,e)|(*c,*e))}
+    pub fn context_closed(&self,context:(u64,u64))->bool{self.closed_contexts.contains_key(&context)}
+    pub fn transport_open(&mut self,context:(u64,u64)){self.closed_contexts.remove(&context);}
+    /// Both TCP directions closed, or a reset. Retain actors; closure alone
+    /// never identifies a replacement or changes the personal character.
+    pub fn transport_closed(&mut self,context:(u64,u64),source:Evidence)->Result<()> {
+        if !self.closed_contexts.contains_key(&context) && self.closed_contexts.len()>=4096{return Err("closed identity context capacity reached".into());}
+        if self.closed_contexts.get(&context).is_none_or(|old|source.timestamp_ns<old.timestamp_ns){
+            self.closed_contexts.insert(context,source);self.event("transport_context_closed",None,Some(source));
+        }Ok(())
+    }
+    /// Some instance entries omit personal state. An exact independently parsed
+    /// full UID can continue self after the old socket has verifiably closed.
+    /// Code/name matches, overlapping sockets and delayed old frames cannot.
+    pub fn follow_closed_personal_context(&mut self,key:EntityKey,c:&Character,source:Evidence,context:(u64,u64))->Result<bool> {
+        let Some(old)=self.wire_context.filter(|old|*old!=context && old.0==context.0) else{return Ok(false);};
+        if !self.closed_contexts.get(&old).is_some_and(|closed|closed.timestamp_ns<=source.timestamp_ns)
+            || self.closed_contexts.contains_key(&context)
+            || !self.personal.as_ref().is_some_and(|p|p.uid.zip(c.uid).is_some_and(|(a,b)|a==b))
+            || self.personal_source.is_some_and(|p|(p.timestamp_ns,p.frame)>(source.timestamp_ns,source.frame))
+            || self.matching_current(c,key.process).iter().any(|other|*other!=key && self.binding_context(*other)==Some(context)) {return Ok(false);}
+        self.wire_personal(context.0,context.1,c.clone(),source)?;
+        self.event("self_context_handoff",Some(key),Some(source));Ok(true)
+    }
+    pub fn matching_current(&self,c:&Character,process:u64)->Vec<EntityKey>{
+        self.current_index.matching(c,process).filter(|key|c.matches(&self.appearances[key].character)).collect()
+    }
+    pub fn stale_identity(&self,c:&Character,source:Evidence,context:(u64,u64))->bool{
+        if self.context_closed(context){return true;}
+        self.matching_current(c,context.0).iter().any(|key|{
+            let a=&self.appearances[key];a.source.timestamp_ns>source.timestamp_ns && self.appearance_contexts.get(key).is_some_and(|old|*old!=context)
+        })
+    }
+    /// A current personal snapshot establishes the active world context. A
+    /// stable identity there can displace older-context bindings individually.
+    /// Concurrent same-context identities remain ambiguous; newest is no vote.
+    pub fn context_replacements(&self,key:EntityKey,c:&Character,context:(u64,u64))->Vec<EntityKey>{
+        if self.wire_context!=Some(context){return Vec::new();}
+        let matching:Vec<_>=self.matching_current(c,key.process).into_iter().filter(|old|*old!=key).collect();
+        if matching.iter().any(|old|self.appearance_contexts.get(old)==Some(&context)){return Vec::new();}
+        let uids:BTreeSet<_>=matching.iter().filter_map(|k|self.appearances[k].character.uid).collect();
+        if uids.len()>1{return Vec::new();}
+        matching.into_iter().filter(|old|self.appearance_contexts.get(old).is_some_and(|old|*old!=context)).collect()
+    }
+    pub fn candidate(&mut self,old:EntityKey,new:EntityKey,source:Evidence)->Result<()> {
+        if old==new || old.process!=new.process{return Ok(());}
+        let pair=(old,new);
+        if !self.candidates.contains_key(&pair) && self.candidates.len()>=4096{return Err("candidate identity capacity reached".into());}
+        self.candidates.insert(pair,CandidateLink{old,new,source,reason:"unresolved concurrent identity; no alias"});Ok(())
     }
     fn event(&mut self, reason: &'static str, key: Option<EntityKey>, source: Option<Evidence>) {
         self.revision += 1;
@@ -111,6 +177,9 @@ impl Tracking {
     /// The verified JP prefix belongs to this TCP connection's observation set.
     /// Older appearances in other scenes remain metadata, never competing self IDs.
     pub fn wire_personal(&mut self,process:u64,binding:u64,c:Character,source:Evidence)->Result<()> {
+        if source.origin==EvidenceOrigin::CachedMetadata{return Err("cached metadata cannot assert current personal identity".into());}
+        Self::validate(&c)?;
+        if self.context_closed((process,binding)){return Ok(());}
         if self.personal_source.is_some_and(|old|(old.timestamp_ns,old.frame)>(source.timestamp_ns,source.frame)) { return Ok(()); }
         self.wire_context=Some((process,binding));
         self.personal(c,source)
@@ -118,6 +187,7 @@ impl Tracking {
     pub fn appearance(&mut self, key: EntityKey, mut c: Character, source: Evidence) -> Result<()> {
         if source.origin==EvidenceOrigin::CachedMetadata { return Err("cached metadata cannot restore an entity binding".into()); }
         Self::validate(&c)?;
+        self.observe_actor(key)?;
         if !self.appearances.contains_key(&key) && self.appearances.len() >= self.limits.appearances {
             return Err("verified appearance directory capacity reached".into());
         }
@@ -125,7 +195,7 @@ impl Tracking {
             if old.character.uid.zip(c.uid).is_some_and(|(a,b)| a != b) {
                 return Err("persistent UID changed without a new entity incarnation".into());
             }
-            if source.frame < old.source.frame { return Err("stale appearance evidence".into()); }
+            if (source.timestamp_ns,source.frame)<(old.source.timestamp_ns,old.source.frame) { return Err("stale appearance evidence".into()); }
             if !old.character.matches(&c) { return Err("appearance identity changed without a new entity incarnation".into()); }
             c.uid = c.uid.or(old.character.uid);
             c.code_server = c.code_server.or(old.character.code_server);
@@ -136,7 +206,7 @@ impl Tracking {
         }
         self.current_index.insert(key,&c);self.processes.insert(key.process);
         self.appearances.insert(key,SeenAppearance { character:c.clone(),source,current:true });
-        self.event("verified_appearance",Some(key),Some(source));
+        self.event(match source.origin{EvidenceOrigin::Packet{wire:20590}=>"personal_owner_binding",EvidenceOrigin::Packet{wire:20559}=>"profile_actor_binding",_=>"verified_appearance"},Some(key),Some(source));
         self.refresh_aliases(&c,key.process)?; self.reconcile(); Ok(())
     }
     pub fn wire_appearance(&mut self,key:EntityKey,c:Character,source:Evidence,context:(u64,u64))->Result<()> {
@@ -148,14 +218,17 @@ impl Tracking {
     }
     /// A verified retirement is different from a capture gap. Gaps must not call this.
     pub fn retire(&mut self, key: EntityKey, source: Evidence) -> Result<()> {
+        self.candidates.retain(|_,c|c.old!=key && c.new!=key);
         let changed=self.appearances.get(&key).map(|a|a.character.clone());
         if let Some(a) = self.appearances.get_mut(&key) {self.current_index.remove(key,&a.character);self.retired_index.insert(key,&a.character);a.current = false; }
         self.votes.remove(&key);
-        if self.operator.is_some_and(|(k,_)| k == key) { self.operator = None; }
+        if self.operator.is_some_and(|(k,_)| k == key) { self.operator_retired=true; }
         if self.automatic.key == Some(key) { self.automatic = SelfBinding::default(); }
         self.event("binding_retired",Some(key),Some(source)); if let Some(c)=changed{self.refresh_aliases(&c,key.process)?;} self.reconcile(); Ok(())
     }
     pub fn clear_bindings(&mut self, source: Evidence) {
+        self.closed_contexts.clear();
+        self.candidates.clear();
         for (key,a) in self.appearances.iter_mut().filter(|(_,a)|a.current) {self.current_index.remove(*key,&a.character);self.retired_index.insert(*key,&a.character);a.current = false; }
         self.automatic = SelfBinding::default(); self.operator = None;
         self.votes.clear(); self.vote_frames.clear();
@@ -169,12 +242,14 @@ impl Tracking {
     pub fn assign(&mut self, key: Option<EntityKey>, source: Evidence) -> Result<()> {
         if source.origin==EvidenceOrigin::CachedMetadata { return Err("cached operator receipt requires fresh binding evidence".into()); }
         self.operator = key.map(|key| (key,source));
+        self.operator_retired=false;
         self.event(if key.is_some() { "operator_assigned" } else { "operator_cleared" },key,Some(source));
         Ok(())
     }
     pub fn binding(&self) -> SelfBinding {
         if let Some((key,source)) = self.operator {
-            SelfBinding { key:Some(key),evidence:SelfEvidence::OperatorAssigned,primary_locked:self.automatic.primary_locked,
+            let key=if self.operator_retired{self.current_group_member(key)}else{Some(key)};
+            SelfBinding { key,evidence:SelfEvidence::OperatorAssigned,primary_locked:self.automatic.primary_locked,
                 voter_locked:self.automatic.voter_locked,
                 candidates:Vec::new(),source:Some(source) }
         } else { self.automatic.clone() }
@@ -261,7 +336,7 @@ impl Tracking {
         let mut proposed=BTreeMap::new();
         for a in self.aliases.values().filter(|a| a.active) {
             let x=Self::root(&proposed,a.old);let y=Self::root(&proposed,a.new);
-            if x!=y { proposed.insert(x.max(y),x.min(y)); }
+            Self::join(&mut proposed,&self.actor_order,x,y);
         }
         let mut uid_sets:BTreeMap<EntityKey,BTreeSet<u64>>=BTreeMap::new();
         let mut code_sets:BTreeMap<EntityKey,BTreeSet<([u8;4],u16)>>=BTreeMap::new();
@@ -284,11 +359,15 @@ impl Tracking {
         self.groups.clear();
         for alias in self.aliases.values().filter(|a| a.active) {
             let a = Self::root(&self.groups,alias.old); let b = Self::root(&self.groups,alias.new);
-            if a != b { self.groups.insert(a.max(b),a.min(b)); }
+            Self::join(&mut self.groups,&self.actor_order,a,b);
         }
         let keys: Vec<_> = self.groups.keys().copied().collect();
         for key in keys { let root = Self::root(&self.groups,key); self.groups.insert(key,root); }
         Ok(())
+    }
+    fn join(groups:&mut BTreeMap<EntityKey,EntityKey>,order:&BTreeMap<EntityKey,u64>,a:EntityKey,b:EntityKey){
+        if a==b{return;}let first=|k|(*order.get(&k).unwrap_or(&u64::MAX),k);
+        if first(a)<first(b){groups.insert(b,a);}else{groups.insert(a,b);}
     }
     fn root(groups: &BTreeMap<EntityKey,EntityKey>, mut key: EntityKey) -> EntityKey {
         while let Some(parent) = groups.get(&key) { if *parent == key { break; } key = *parent; } key

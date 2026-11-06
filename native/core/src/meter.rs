@@ -60,6 +60,7 @@ pub struct Row {
 pub struct SkillRow {pub id:Option<u32>,pub label:String,pub explicit:u128,pub estimated:u128}
 #[derive(Clone,Debug)]
 pub struct Snapshot {
+    pub remembered_players:usize,
     pub revision: u64, pub identity_revision: u64, pub encounter: u64,
     pub target: Option<EntityKey>, pub summary: Aggregate, pub source_count: usize,
     pub rows: Vec<Row>, pub targets: Vec<(EntityKey,String)>, pub target_count: usize,
@@ -255,11 +256,12 @@ impl Meter {
     }
     pub fn event(&mut self, event: Event) -> Result<()> {
         let character_switch = matches!(&event,Event::CharacterSwitch { .. } | Event::ProcessReplacement { .. });
+        let internal=matches!(&event,Event::InternalTransition{..});
         let (evidence,reset,bindings,end) = match event {
             Event::Rebroadcast => { self.registry.cache_metadata(); return Ok(()); }
             Event::Gap => { self.partial = true; self.registry.cache_metadata(); return Ok(()); }
             Event::TrailingCutscene => return Ok(()),
-            Event::InternalTransition { evidence } => (evidence,false,true,false),
+            Event::InternalTransition { evidence } => (evidence,false,false,false),
             Event::NewRun { evidence } | Event::SameMapRetry { evidence } |
             Event::CharacterSwitch { evidence } | Event::ProcessReplacement { evidence } => (evidence,true,true,false),
             Event::End { evidence } => (evidence,false,false,true),
@@ -268,6 +270,7 @@ impl Meter {
         if self.transitions.contains(&evidence) { return Ok(()); }
         if self.transitions.len() >= 4096 { return Err("transition evidence capacity reached".into()); }
         self.transitions.insert(evidence);
+        if internal{self.partition_live_tracks();self.registry.carry_room();}
         if reset || end || bindings { self.partition_live_tracks(); }
         if bindings { self.binding += 1; self.registry.clear_current(); }
         if character_switch { self.registry.clear_character(); }
@@ -277,6 +280,7 @@ impl Meter {
         }
         self.revision += 1; Ok(())
     }
+    pub fn transition_seen(&self,evidence:u64)->bool{self.transitions.contains(&evidence)}
     pub fn snapshot(&self) -> Snapshot {
         let encounter = &self.encounters[&self.viewing.unwrap_or(self.current)]; let view = encounter.views.get(&self.selected);
         let mut summary = view.map_or_else(Aggregate::default,|v| v.total.clone());
@@ -309,7 +313,7 @@ impl Meter {
         let targets = encounter.views.keys().filter_map(|k| *k).map(|k|(k,self.registry.label(k)))
             .filter(|(_,name)|name.to_lowercase().contains(&self.target_query)).take(256).collect();
         let chart=self.chart(&summary);
-        Snapshot { revision: self.revision,identity_revision: self.registry.revision,encounter: encounter.id,
+        Snapshot { remembered_players:self.registry.remembered_players(),revision: self.revision,identity_revision: self.registry.revision,encounter: encounter.id,
             target: self.selected,summary,source_count: count,rows,targets,target_count,
             last_command: self.last_command,partial: self.partial,self_binding:self.registry.self_binding(),
             current_encounter:self.current,encounters:self.encounters.iter().map(|(id,e)|(*id,e.state)).collect(),estimated_damage,

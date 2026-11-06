@@ -45,7 +45,9 @@ impl Registry {
     pub fn owned_spawn(&mut self,process:u64,binding:u64,spawn:Spawn,evidence:Evidence)->Result<EntityKey>{
         if spawn.kind!=4 || spawn.actor==0 || spawn.owner==0 || spawn.actor==spawn.owner{return Err("invalid owned spawn".into());}
         let mut pet=self.observe(process,binding,spawn.actor)?;
-        if self.owners.links.get(&pet).is_some_and(|old|old.template!=spawn.template){self.retire(pet)?;pet=self.observe(process,binding,spawn.actor)?;}
+        if self.stale_actor_identity(process,binding,spawn.actor,evidence){return Ok(pet);}
+        if self.records[&pet].kind.is_some_and(|kind|kind!="pet")
+            || self.owners.links.get(&pet).is_some_and(|old|old.template!=spawn.template){self.retire(pet)?;pet=self.observe(process,binding,spawn.actor)?;}
         // An owner can be provisional; appearance enrichment never changes this
         // reference. Reusing that raw ID later cannot steal the historical pet.
         let owner=self.observe(process,binding,spawn.owner)?;

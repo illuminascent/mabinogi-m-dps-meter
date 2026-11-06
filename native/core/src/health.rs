@@ -145,7 +145,13 @@ impl Health {
     }
     pub fn clear_context(&mut self,context:u64){
         let keys:Vec<_>=self.slots.keys().filter(|(c,_)|*c==context).copied().collect();
-        for key in keys{let mut slot=self.slots.remove(&key).unwrap();self.evidence_count-=slot.before.len()+slot.explicit_before.len();for p in slot.pending{self.pending_count-=1;self.close(key.1,p,&mut slot.rotation,Some("continuity invalidated"));}}
+        for (_,target) in keys{self.clear_target(context,target);}
+    }
+    pub fn clear_target(&mut self,context:u64,target:EntityKey){
+        if let Some(mut slot)=self.slots.remove(&(context,target)){
+            self.evidence_count-=slot.before.len()+slot.explicit_before.len();
+            for p in slot.pending{self.pending_count-=1;self.close(target,p,&mut slot.rotation,Some("continuity invalidated"));}
+        }
     }
     pub fn clear(&mut self){let contexts:BTreeSet<_>=self.slots.keys().map(|(c,_)|*c).collect();for c in contexts{self.clear_context(c);}}
     pub fn flush(&mut self)->Vec<Estimate>{

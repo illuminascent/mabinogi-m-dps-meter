@@ -42,6 +42,24 @@ Partial attachment, missing identity records, and capture loss remain visible.
 Current history is bounded at 32 encounters. Packet scene announcements are not
 treated as proof of a new instance.
 
+Player tracking is independent of the damage rows in the selected encounter.
+The status line reports how many player identities are remembered for the
+session, including cached players from earlier rooms. Continuing actor bindings
+survive room refreshes and transport gaps; supported personal-state and profile
+records can resolve actor replacements without a new appearance announcement.
+Ambiguous replacements remain separate. Disk caches restore names, not current
+actors or self assignment.
+If entry omits personal state, a fresh exact UID can continue self after the old
+TCP connection verifiably closes. Replacements do not depend on display names.
+Operator assignment follows proven participant aliases and becomes unresolved
+when those aliases become ambiguous. Reused TCP tuples get separate connection
+lifetimes; delayed old identity records cannot replace a newer incarnation.
+
+After a TCP hole, the decoder retains complete later buffered messages and
+reacquires framing after the bounded wait. The missing bytes still mark coverage
+partial, and HP/action matching never crosses the hole. This can recover damage
+records that older builds discarded along with the buffered suffix.
+
 Observed pets are grouped with their evidenced owner while their original actor
 references and separate contributions remain in the audit. Right-click a source
 row to see its pet contribution and skill breakdown, with explicit and estimated
@@ -54,8 +72,15 @@ distinct immediate attackers, with deterministic integer rounding. Activity is
 limited to eight messages in that TCP direction and 32 ms; a separate 200 ms wait
 allows delayed evidence without extending activity. Loss without eligible
 candidates remains unassigned. Allocations do not increase observed hit or
-critical counts. Audit v2 records the decisions, unassigned amounts, ownership,
-skill evidence and partial clock bounds; clock bounds are not exact HP timestamps.
+critical counts. Audit v3 records the decisions, unassigned amounts, ownership,
+participant bindings, identity transitions, skill evidence and partial clock bounds; clock bounds are
+not exact HP timestamps.
+
+The supported JP raid-boss HP format is decoded from its protected scalar
+messages using the IV carried by the NPC spawn. Strict actor/incarnation scope,
+message bounds, padding and numeric checks gate these values before HP accounting.
+Missing or invalid state remains unavailable. Decoding HP does not independently
+verify the source attribution of every teammate amount.
 
 Timeline evidence is partial. The decoder retains embedded clock candidates,
 unwraps counters within a compatible TCP direction, and separates apparent clock

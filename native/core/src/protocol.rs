@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, io::Read, sync::OnceLock};
 
 pub const MAX_WIRE: usize = 4 * 1024 * 1024;
 pub const MAX_DECODED: usize = 32 * 1024 * 1024;
-pub const PROFILE: &str = "mmh-jp.4-observed-v6";
+pub const PROFILE: &str = "mmh-jp.4-observed-v7";
 
 pub fn normalize(wire: i32) -> i32 {
     static MAP: OnceLock<BTreeMap<i32, i32>> = OnceLock::new();
@@ -21,6 +21,11 @@ pub fn u64le(p: &[u8], n: usize) -> u64 {
 
 #[derive(Clone, Debug)]
 pub struct Frame {
+    /// Original observation time of the last captured bytes needed for this
+    /// frame, independent of a later TCP recovery/delivery. None before transport.
+    pub timestamp_ns: Option<u64>,
+    /// Never join action/HP evidence across a recovered byte hole or framing loss.
+    pub gap_before: bool,
     pub stream_byte:u64,
     pub wire: Option<i32>,
     pub compression: u8,
@@ -49,7 +54,7 @@ pub fn read_frame(p: &[u8]) -> Result<Option<Frame>> {
     if &p[..4] == b"MMCG" {
         let n = u32le(p, 4) as usize;
         if n > 65536 { return Err("invalid MMCG length".into()); }
-        return Ok((p.len() >= 8+n).then(|| Frame { stream_byte:0,wire: None, compression: 0,
+        return Ok((p.len() >= 8+n).then(|| Frame { timestamp_ns:None,gap_before:false,stream_byte:0,wire: None, compression: 0,
             payload: p[8..8+n].to_vec(), decoded: true, consumed: 8+n }));
     }
     if p.len() < 9 { return Ok(None); }
@@ -64,7 +69,7 @@ pub fn read_frame(p: &[u8]) -> Result<Option<Frame>> {
             Ok(v) => (v, true), Err(_) => (p[9..9+n].to_vec(), false),
         }
     } else { (p[9..9+n].to_vec(), true) };
-    Ok(Some(Frame { stream_byte:0,wire: Some(wire), compression: p[8], payload, decoded, consumed: 9+n }))
+    Ok(Some(Frame { timestamp_ns:None,gap_before:false,stream_byte:0,wire: Some(wire), compression: p[8], payload, decoded, consumed: 9+n }))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

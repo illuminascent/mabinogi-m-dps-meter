@@ -1,10 +1,12 @@
 //! Verified JP name adapters and a wire-independent reconciliation model.
 use crate::{protocol::{u32le, u64le}, Result};
-use std::{collections::{BTreeMap,BTreeSet}, sync::OnceLock};
+use std::{collections::{BTreeMap,BTreeSet,VecDeque}, sync::OnceLock};
 pub mod tracking;
 pub mod score2_layout;
 pub mod cache;
 pub mod ownership;
+pub mod personal;
+pub mod profile;
 use tracking::{Evidence,EvidenceOrigin,SelfBinding,Tracking,VoteKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -139,6 +141,9 @@ pub struct Metadata {
 
 #[derive(Default, Debug)]
 pub struct Registry {
+    carried:BTreeSet<EntityKey>,
+    room_carried:BTreeSet<EntityKey>,
+    pub personal_bindings:VecDeque<PersonalProof>,pub personal_binding_evictions:u64,
     pub owners:ownership::Owners,
     pub timing:BTreeMap<EntityKey,IdentityTiming>,
     uid_members:BTreeMap<u64,BTreeSet<EntityKey>>,
@@ -152,11 +157,18 @@ pub struct Registry {
     pub profile_names:BTreeMap<u64,NameMetadata>,
 }
 #[derive(Clone,Debug,Default)]
-pub struct IdentityTiming {pub first:Option<crate::combat::Stamp>,pub received:Option<Evidence>,pub resolved:Option<Evidence>}
+pub struct IdentityTiming {pub first:Option<crate::combat::Stamp>,pub last:Option<crate::combat::Stamp>,pub received:Option<Evidence>,pub resolved:Option<Evidence>}
+#[derive(Clone,Debug)]
+pub struct PersonalProof{pub key:EntityKey,pub evidence:Evidence,pub offset:usize,pub end:usize,pub pets:Vec<personal::Pet>}
 impl Registry {
-    pub fn note_observed(&mut self,key:EntityKey,at:crate::combat::Stamp){self.timing.entry(key).or_default().first.get_or_insert(at);}
+    pub fn note_observed(&mut self,key:EntityKey,at:crate::combat::Stamp){
+        let t=self.timing.entry(key).or_default();t.first.get_or_insert(at);
+        if t.last.is_none_or(|old|at.timestamp_ns>=old.timestamp_ns){t.last=Some(at);}
+        if self.carried.remove(&key){self.revision+=1;}
+        self.room_carried.remove(&key);
+    }
     pub fn observe_at(&mut self,process:u64,binding:u64,actor:u32,at:crate::combat::Stamp)->Result<EntityKey>{
-        let key=self.observe(process,binding,actor)?;let timing=self.timing.entry(key).or_default();if timing.first.is_none(){timing.first=Some(at);}Ok(key)
+        let key=self.observe(process,binding,actor)?;self.note_observed(key,at);Ok(key)
     }
     pub fn observe(&mut self, process: u64, binding: u64, actor: u32) -> Result<EntityKey> {
         if actor == 0 { return Err("zero entity ID".into()); }
@@ -165,6 +177,7 @@ impl Registry {
         let generation = self.generations.get(&(process,binding,actor)).copied().unwrap_or(0).checked_add(1)
             .ok_or("entity generation overflow")?;
         let key = EntityKey { process, binding, actor, generation };
+        self.tracking.observe_actor(key)?;
         self.records.insert(key, Metadata::default()); self.current.insert((process,binding,actor), key);
         self.generations.insert((process,binding,actor),generation);
         self.revision += 1; Ok(key)
@@ -172,11 +185,21 @@ impl Registry {
     pub fn is_current(&self, key: EntityKey) -> bool {
         self.current.get(&(key.process,key.binding,key.actor)) == Some(&key)
     }
+    pub fn current_key(&self,process:u64,binding:u64,actor:u32)->Option<EntityKey>{self.current.get(&(process,binding,actor)).copied()}
+    /// Apply before metadata can retire/recreate the raw actor. A late recovered
+    /// identity may describe an older incarnation even when its UID differs.
+    pub fn stale_actor_identity(&self,process:u64,binding:u64,actor:u32,source:Evidence)->bool{
+        self.current_key(process,binding,actor).is_some_and(|key|{
+            self.tracking.appearances.get(&key).is_some_and(|a|(a.source.timestamp_ns,a.source.frame)>(source.timestamp_ns,source.frame))
+                || self.owners.links.get(&key).is_some_and(|a|(a.evidence.timestamp_ns,a.evidence.frame)>(source.timestamp_ns,source.frame))
+        })
+    }
     pub fn appearance(&mut self, process: u64, binding: u64, a: Appearance) -> Result<EntityKey> {
         let mut key = self.observe(process,binding,a.actor)?;
         let old = &self.records[&key];
         let kind = if a.template.is_some() { Some("npc") } else if a.uid.is_some() { Some("player") } else { None };
         if old.uid.zip(a.uid).is_some_and(|(x,y)| x != y)
+            || a.uid.is_some_and(|uid|self.tracking.appearances.get(&key).is_some_and(|prior|Character::score2_appearance_uid(uid).is_ok_and(|c|!prior.character.matches(&c))))
             || old.template.as_ref().zip(a.template.as_ref()).is_some_and(|(x,y)| x != y)
             || old.kind.zip(kind).is_some_and(|(x,y)| x != y) {
             self.retire(key)?; key = self.observe(process,binding,a.actor)?;
@@ -193,21 +216,32 @@ impl Registry {
         meta.cached = false; self.revision += 1; Ok(key)
     }
     pub fn retire(&mut self, key: EntityKey) -> Result<()> {
+        self.retire_evidenced(key,self.semantic_source())
+    }
+    fn retire_evidenced(&mut self,key:EntityKey,source:Evidence)->Result<()>{
+        self.carried.remove(&key);
+        self.room_carried.remove(&key);
         if self.is_current(key) { self.current.remove(&(key.process,key.binding,key.actor)); }
-        self.tracking.retire(key,self.semantic_source())?;
+        self.tracking.retire(key,source)?;
         self.sync_self(); self.revision += 1; Ok(())
     }
     pub fn cache_metadata(&mut self) {
+        self.carried.extend(self.current.values().copied());
         for v in self.records.values_mut() { v.cached = true; } self.revision += 1;
     }
+    pub fn carry_room(&mut self){
+        self.room_carried=self.current.values().copied().collect();self.cache_metadata();
+    }
     pub fn clear_current(&mut self) {
+        self.carried.clear();
+        self.room_carried.clear();
         self.current.clear(); self.tracking.clear_bindings(self.semantic_source());
         self.sync_self(); self.cache_metadata();
     }
     pub fn clear_character(&mut self) {
         self.tracking.clear_character(self.semantic_source()); self.clear_current();
     }
-    /// Typed semantic input only: JP UID/server adapter is still disabled.
+    /// Typed semantic input; wire adapters use provenance-bearing methods.
     pub fn character(&mut self, identity: Character) -> Result<()> {
         self.personal_evidence(identity,self.semantic_source())
     }
@@ -215,7 +249,12 @@ impl Registry {
         self.tracking.personal(identity,source)?; self.sync_self(); self.revision += 1; Ok(())
     }
     pub fn wire_personal(&mut self,process:u64,binding:u64,identity:Character,source:Evidence)->Result<()> {
-        self.tracking.wire_personal(process,binding,identity,source)?;self.sync_self();self.revision+=1;Ok(())
+        let previous=self.tracking.personal_context();
+        self.tracking.wire_personal(process,binding,identity,source)?;
+        if previous!=self.tracking.personal_context() && self.tracking.personal_context()==Some((process,binding)){
+            self.reconcile_wire_context((process,binding),None)?;
+        }
+        self.sync_self();self.revision+=1;Ok(())
     }
     pub fn verified_appearance(&mut self, key: EntityKey, identity: Character) -> Result<()> {
         self.appearance_evidence(key,identity,self.semantic_source())
@@ -226,6 +265,7 @@ impl Registry {
             return Err("verified UID requires a replacement incarnation".into());
         }
         self.tracking.appearance(key,identity.clone(),source)?;
+        self.carried.remove(&key);self.room_carried.remove(&key);
         let meta = self.records.get_mut(&key).unwrap();
         if let Some((name,_)) = identity.name_server { meta.name = Some(name); meta.conflicting = false; }
         meta.uid = identity.uid.or(meta.uid); meta.cached = false; meta.kind = Some("player");
@@ -251,8 +291,91 @@ impl Registry {
         self.tracking.wire_appearance(key,identity,source,context)?;self.sync_self();self.revision+=1;Ok(())
     }
     pub fn wire_named_appearance(&mut self,key:EntityKey,identity:Character,name:Option<String>,source:Evidence,context:(u64,u64))->Result<()> {
+        let handoff=self.tracking.follow_closed_personal_context(key,&identity,source,context)?;
+        // A fresh full identity for the actor independently identified by the
+        // personal owner record can resolve its UID, including a conflicting
+        // old UID with the same six-byte prefix. Never extend the prefix to UID.
+        if identity.uid.is_some() && self.personal_bindings.back().is_some_and(|p|p.key==key && p.evidence.timestamp_ns<=source.timestamp_ns)
+            && self.tracking.binding_context(key)==Some(context)
+            && self.tracking.personal.as_ref().is_some_and(|p|p.code_server.is_some() && p.code_server==identity.code_server){
+            self.tracking.personal(identity.clone(),source)?;
+        }
+        let mut replaced=self.tracking.context_replacements(key,&identity,context);
+        // A verified room boundary also supports scoped replacement within one
+        // socket. If the old actor is observed in the new room it is no longer
+        // merely carried, and a concurrent claim must remain ambiguous.
+        if replaced.is_empty(){
+            let matching:Vec<_>=self.tracking.matching_current(&identity,key.process).into_iter().filter(|old|*old!=key).collect();
+            let uids:BTreeSet<_>=matching.iter().filter_map(|old|self.tracking.appearances[old].character.uid).collect();
+            if !matching.is_empty() && uids.len()<=1 && matching.iter().all(|old|self.room_carried.contains(old)){replaced=matching;}
+        }
+        let mut inherited=replaced.iter().find_map(|old|self.records.get(old).filter(|m|identity.uid.is_some() && m.uid==identity.uid && !m.conflicting).and_then(|m|m.name.clone()));
+        if inherited.is_none(){
+            let names:BTreeSet<_>=identity.uid.and_then(|uid|self.uid_members.get(&uid)).into_iter().flatten()
+                .filter_map(|old|self.records.get(old).filter(|m|!m.conflicting).and_then(|m|m.name.clone())).collect();
+            if names.len()==1{inherited=names.into_iter().next();}
+        }
+        for old in replaced{
+            self.retire_evidenced(old,source)?;
+        }
         self.tracking.appearance_context(key,context)?;
-        self.appearance_named_evidence(key,identity,name,source)
+        self.appearance_named_evidence(key,identity.clone(),name.or(inherited),source)?;
+        let duplicates:Vec<_>=self.tracking.matching_current(&identity,key.process).into_iter().filter(|old|*old!=key).collect();
+        for old in duplicates{self.tracking.candidate(old,key,source)?;}
+        if handoff{
+            // Reconcile fresh peer appearances that arrived before self proved
+            // this context. A second pass is scoped to existing verified records;
+            // it cannot manufacture presence or resolve same-context duplicates.
+            self.reconcile_wire_context(context,Some(key))?;
+        }
+        Ok(())
+    }
+    fn reconcile_wire_context(&mut self,context:(u64,u64),exclude:Option<EntityKey>)->Result<()>{
+        let earlier:Vec<_>=self.tracking.appearances.iter().filter(|(key,a)|Some(**key)!=exclude && a.current
+            && self.tracking.binding_context(**key)==Some(context)).map(|(k,a)|(*k,a.character.clone(),a.source)).collect();
+        for (key,c,evidence) in earlier{self.wire_named_appearance(key,c,None,evidence,context)?;}Ok(())
+    }
+    pub fn personal_actor(&mut self,process:u64,binding:u64,context:(u64,u64),p:personal::Personal,source:Evidence,at:crate::combat::Stamp)->Result<Option<EntityKey>>{
+        if self.tracking.context_closed(context){return Ok(None);}
+        if self.stale_actor_identity(process,binding,p.actor,source){return Ok(None);}
+        if self.tracking.personal_source.is_some_and(|old|(old.timestamp_ns,old.frame)>(source.timestamp_ns,source.frame)){return Ok(None);}
+        // The owner record supplies a local actor and six-byte character code,
+        // not a full UID for a new incarnation. Use a UID only if a fresh,
+        // independently verified identity already binds this exact actor here.
+        let mut character=p.character.clone();
+        if let Some(current)=self.current_key(process,binding,p.actor){
+            if !self.carried.contains(&current) && self.tracking.binding_context(current)==Some(context){
+                if let Some(a)=self.tracking.appearances.get(&current).filter(|a|a.character.uid.is_some() && a.character.code_server==character.code_server
+                    && self.tracking.personal_source.is_none_or(|old|a.source.timestamp_ns>=old.timestamp_ns)){
+                    character=a.character.clone();
+                }
+            }
+        }
+        self.wire_personal(process,context.1,character.clone(),source)?;
+        let mut key=self.observe(process,binding,p.actor)?;
+        if self.tracking.appearances.get(&key).is_some_and(|a|!a.character.matches(&character))
+            || self.records[&key].uid.is_some_and(|uid|Character::score2_appearance_uid(uid).is_ok_and(|old|!old.matches(&character))){
+            self.retire(key)?;key=self.observe(process,binding,p.actor)?;
+        }
+        // The validated owner field directly identifies the current local actor.
+        // It can replace the prior local binding even when the socket/world
+        // context integer did not change. This is stronger than two concurrent
+        // appearance claims, which intentionally remain unresolved.
+        if let Some(old)=self.personal_bindings.back().map(|p|p.key).filter(|old|*old!=key && self.is_current(*old)){
+            self.retire_evidenced(old,source)?;
+        }
+        self.wire_named_appearance(key,character,None,source,context)?;self.note_observed(key,at);
+        if self.personal_bindings.len()==128{self.personal_bindings.pop_front();self.personal_binding_evictions+=1;}
+        self.personal_bindings.push_back(PersonalProof{key,evidence:source,offset:p.offset,end:p.end,pets:p.pets});
+        Ok(Some(key))
+    }
+    pub fn participant(&self,key:EntityKey)->Option<u64>{self.tracking.participant(key)}
+    pub fn binding_state(&self,key:EntityKey)->&'static str{
+        if !self.is_current(key){"retired"}else if self.carried.contains(&key){"carried"}else if self.tracking.appearances.contains_key(&key){"verified"}else{"observed"}
+    }
+    pub fn remembered_players(&self)->usize{
+        self.current.values().filter(|k|self.records.get(k).is_some_and(|m|m.kind==Some("player")))
+            .filter_map(|k|self.participant(*k)).collect::<BTreeSet<_>>().len()
     }
     fn check_metadata_name(name:&str) -> Result<()> {
         if name.trim().is_empty() || name.encode_utf16().count()>128 || name.chars().any(char::is_control) {
@@ -301,7 +424,8 @@ impl Registry {
         self.tracking.current_group_member(key).or_else(|| self.is_current(key).then_some(key))
     }
     pub fn label(&self, key: EntityKey) -> String {
-        let name = self.records.get(&key).filter(|m| !m.conflicting).and_then(|m| m.name.as_ref());
+        let name = self.records.get(&key).filter(|m| !m.conflicting).and_then(|m| m.name.as_ref())
+            .or_else(||if self.records.get(&key).is_some_and(|m|m.conflicting){None}else{self.records.get(&self.group(key)).filter(|m|!m.conflicting).and_then(|m|m.name.as_ref())});
         if let Some(n) = name { format!("{n} [{}]",key.actor) }
         else if self.self_key == Some(key) { format!("<ME> [{}]",key.actor) }
         else { format!("Name pending ({})",key.actor) }

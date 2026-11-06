@@ -7,6 +7,7 @@ pub mod replay;
 pub mod transport;
 pub mod session;
 pub mod health;
+pub mod protected_hp;
 pub mod combat;
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -22,6 +23,8 @@ impl Diagnostics {
         self.0.keys().any(|s| !matches!(s.as_str(),
             "retransmission" | "scene_marker" | "identity_alignment" | "unknown_opcode" |
             "diagnostic_eviction" | "identity_evidence_eviction" | "tcp_restart" | "name_metadata" |
-            "personal_identity" | "structured_player_appearance" | "legacy_player_metadata_only" | "pet_ownership"))
+            "personal_identity" | "structured_player_appearance" | "legacy_player_metadata_only" | "pet_ownership" |
+            "personal_actor_binding" | "profile_identity" | "protected_hp_decoded" | "protected_hp_seed" |
+            "protected_hp_seed_eviction" | "tcp_gap_recovered" | "stale_identity_ignored" | "actor_binding_replaced"))
     }
 }

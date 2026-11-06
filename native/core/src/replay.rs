@@ -12,6 +12,9 @@ pub struct Evidence {
     pub flow: Flow,pub payload: Vec<u8>,pub payload_length: usize,pub decoded: bool,
 }
 pub struct Replay {
+    pub protected_hp:crate::protected_hp::Decoder,
+    pub protected_hp_samples:VecDeque<(identity::EntityKey,Stamp,u64)>,pub protected_hp_evictions:u64,
+    pub protected_hp_seeds:VecDeque<(identity::EntityKey,Stamp,usize,u64,bool)>,
     /// Offline ablation only. Default live/replay never withholds accepted hits.
     pub use_clock_bounds:bool,pub evaluation_withhold_actor:Option<u32>,pub withheld:VecDeque<Hit>,pub withheld_evictions:u64,
     pub combat:combat::Combat,pub timeline:combat::Timeline,
@@ -20,6 +23,7 @@ pub struct Replay {
     health_identity_revision:u64,
     pub meter: Meter, pub diagnostics: Diagnostics, pub segments: u64, pub frames: u64,
     streams: BTreeMap<Flow,TcpStream>, connections: BTreeMap<[(String,u16);2],u64>,
+    next_lineage:u64,fins:BTreeMap<u64,u8>,
     syns: BTreeMap<[(String,u16);2],(Flow,u32)>,
     last_timestamp: Option<u64>, pub evidence: VecDeque<Evidence>,
     pub frame_history: VecDeque<Evidence>, history_bytes: usize,
@@ -30,8 +34,8 @@ pub struct Replay {
 }
 impl Replay {
     pub fn new(aligned: bool) -> Self {
-        Self { use_clock_bounds:true,evaluation_withhold_actor:None,withheld:VecDeque::new(),withheld_evictions:0,health_identity_revision:u64::MAX,combat:combat::Combat::default(),timeline:combat::Timeline::default(),last_clock:BTreeMap::new(),pending_skills:VecDeque::new(),meter: Meter::default(),diagnostics: Diagnostics::default(),segments: 0,frames: 0,
-            streams: BTreeMap::new(),connections: BTreeMap::new(),syns: BTreeMap::new(),
+        Self { protected_hp:crate::protected_hp::Decoder::default(),protected_hp_samples:VecDeque::new(),protected_hp_evictions:0,protected_hp_seeds:VecDeque::new(),use_clock_bounds:true,evaluation_withhold_actor:None,withheld:VecDeque::new(),withheld_evictions:0,health_identity_revision:u64::MAX,combat:combat::Combat::default(),timeline:combat::Timeline::default(),last_clock:BTreeMap::new(),pending_skills:VecDeque::new(),meter: Meter::default(),diagnostics: Diagnostics::default(),segments: 0,frames: 0,
+            streams: BTreeMap::new(),connections: BTreeMap::new(),next_lineage:0,fins:BTreeMap::new(),syns: BTreeMap::new(),
             last_timestamp: None,evidence: VecDeque::new(),frame_history: VecDeque::new(),history_bytes: 0,
             aligned,finished: false,buffered: 0,health:crate::health::Health::default(),process:0,continuities:BTreeMap::new(),context_orders:BTreeMap::new(),live_scope:false }
     }
@@ -53,14 +57,19 @@ impl Replay {
         if self.last_timestamp.is_some_and(|t| s.timestamp_ns < t) { return Err("capture timestamps moved backwards".into()); }
         self.last_timestamp = Some(s.timestamp_ns); self.segments += 1;
         let connection = s.flow.connection();
-        if !self.connections.contains_key(&connection) {
-            if self.connections.len() >= 4096 { return Err("connection capacity reached".into()); }
-            self.connections.insert(connection.clone(),self.connections.len() as u64+1);
-        }
-        let lineage = self.connections[&connection];
-        let context=lineage*2+u64::from((s.flow.src.clone(),s.flow.sport)>(s.flow.dst.clone(),s.flow.dport));
-        if s.syn && !s.ack && self.syns.get(&connection) != Some(&(s.flow.clone(),s.seq)) {
-            self.invalidate_context(lineage*2);self.invalidate_context(lineage*2+1);
+        let new_syn=s.syn && !s.ack && self.syns.get(&connection)!=Some(&(s.flow.clone(),s.seq));
+        let previous=self.connections.get(&connection).copied();
+        if new_syn {
+            if let Some(old)=previous{
+                // A fresh handshake reusing a tuple supersedes its previous TCP
+                // incarnation. Sequence/framing, identity context and HP keys
+                // must not share a lifetime merely because the tuple is equal.
+                self.invalidate_context(old*2);self.invalidate_context(old*2+1);
+                self.meter.registry.tracking.transport_closed((self.process,(old<<32)|self.meter.binding),identity::tracking::Evidence{
+                    frame:self.frames,timestamp_ns:s.timestamp_ns,origin:identity::tracking::EvidenceOrigin::Semantic
+                })?;
+                self.protected_hp.clear_context(old*2);self.protected_hp.clear_context(old*2+1);self.fins.remove(&old);
+            }
             let keys: Vec<_> = self.streams.keys().filter(|k| k.connection() == connection).cloned().collect();
             if !keys.is_empty() {
                 self.diagnostics.report("tcp_restart"); self.meter.registry.cache_metadata();
@@ -69,15 +78,34 @@ impl Replay {
             }
             self.syns.insert(connection.clone(),(s.flow.clone(),s.seq));
         }
+        if previous.is_none() || new_syn {
+            if self.next_lineage>=4096{return Err("connection lifetime capacity reached".into());}
+            self.next_lineage+=1;self.connections.insert(connection.clone(),self.next_lineage);
+        }
+        let lineage=self.connections[&connection];
+        let direction=u64::from((s.flow.src.clone(),s.flow.sport)>(s.flow.dst.clone(),s.flow.dport));
+        let context=lineage*2+direction;
+        // Never invent another TCP lifetime from a late payload after close.
+        // Retained streams can still fill holes before their FIN position;
+        // TcpStream itself rejects duplicates once that direction has drained.
+        if !s.syn && !s.payload.is_empty() && !self.streams.contains_key(&s.flow)
+            && self.meter.registry.tracking.context_closed((self.process,(lineage<<32)|self.meter.binding)){
+            self.diagnostics.report("closed_connection_payload");self.meter.partial=true;return Ok(());
+        }
         if !self.streams.contains_key(&s.flow) {
             if self.streams.len() >= 4096 { return Err("directional stream capacity reached".into()); }
             self.streams.insert(s.flow.clone(),TcpStream::new(self.aligned));
         }
-        if self.streams[&s.flow].closed && !s.syn && !s.payload.is_empty() {
+        if self.streams[&s.flow].closed && !s.syn && !s.payload.is_empty(){
+            if !self.streams[&s.flow].starts_after_fin(s.seq){self.diagnostics.report("retransmission");return Ok(());}
+            if self.meter.registry.tracking.context_closed((self.process,(lineage<<32)|self.meter.binding)){
+                self.diagnostics.report("closed_connection_payload");self.meter.partial=true;return Ok(());
+            }
+            // Preserve the existing half-close refresh path for genuinely new
+            // sequence space, while rejecting already consumed bytes above.
             self.invalidate_context(context);
-            let old = self.streams.remove(&s.flow).unwrap();self.buffered -= old.buffered();
-            old.finish(&mut self.diagnostics);self.meter.registry.cache_metadata();
-            self.streams.insert(s.flow.clone(),TcpStream::new(self.aligned));
+            let old=self.streams.remove(&s.flow).unwrap();self.buffered-=old.buffered();old.finish(&mut self.diagnostics);
+            self.meter.registry.cache_metadata();self.streams.insert(s.flow.clone(),TcpStream::new(self.aligned));
         }
         // Reserve worst-case incoming bytes before allocating pending/framing buffers.
         if self.buffered+s.payload.len() > GLOBAL_BUFFER { return Err("global transport capacity reached".into()); }
@@ -86,11 +114,13 @@ impl Replay {
         let before = stream.buffered(); let decoded = stream.feed(&s,&mut self.diagnostics)?;
         self.buffered = self.buffered-before+stream.buffered();
         let loss_after=["tcp_gap_timeout","tcp_pending_overflow","alignment_lost","frame_rejected"].iter().map(|k|self.diagnostics.0.get(*k).copied().unwrap_or(0)).sum::<u64>();
-        if loss_after!=loss_before {self.invalidate_context(context);}
+        if loss_after!=loss_before && decoded.is_empty() {self.invalidate_context(context);}
         for frame in decoded {
+            if frame.gap_before {self.invalidate_context(context);}
+            let timestamp_ns=frame.timestamp_ns.unwrap_or(s.timestamp_ns);
             self.frames += 1;
             let order=self.context_orders.entry(context).or_default();*order+=1;
-            let at=Stamp{process:self.process,continuity:*self.continuities.entry(context).or_default(),context,frame:self.frames,order:*order,timestamp_ns:s.timestamp_ns,tcp_byte:frame.stream_byte};
+            let at=Stamp{process:self.process,continuity:*self.continuities.entry(context).or_default(),context,frame:self.frames,order:*order,timestamp_ns,tcp_byte:frame.stream_byte};
             if self.health_identity_revision!=self.meter.registry.revision{
                 self.health.self_sources(self.meter.registry.self_key.is_some(),self.meter.registry.records.keys().filter(|k|self.meter.registry.is_self_source(**k)).copied().collect());
                 self.health_identity_revision=self.meter.registry.revision;
@@ -98,7 +128,7 @@ impl Replay {
             if self.use_clock_bounds{self.health.constrain(&self.timeline);}
             for e in self.health.expire(at){self.estimate(e)?;}
             self.finalize_skills(Some(at.timestamp_ns))?;
-            let record = Evidence { at,tcp_byte:frame.stream_byte,context,timestamp_ns: s.timestamp_ns,frame: self.frames,wire: frame.wire,
+            let record = Evidence { at,tcp_byte:frame.stream_byte,context,timestamp_ns,frame: self.frames,wire: frame.wire,
                 compression: frame.compression,flow: s.flow.clone(),payload_length: frame.payload.len(),
                 payload: frame.payload.iter().take(65536).copied().collect(),decoded: frame.decoded };
             let cost = record.payload.len()+512;
@@ -122,10 +152,10 @@ impl Replay {
                         let target = self.meter.registry.observe_at(self.process,binding,d.target,at)?;
                         if self.evaluation_withhold_actor==Some(d.actor){
                             if self.withheld.len()==65536{self.withheld.pop_front();self.withheld_evictions+=1;}
-                            self.withheld.push_back(Hit{timestamp_ns:s.timestamp_ns,source,target,damage:d});continue;
+                            self.withheld.push_back(Hit{timestamp_ns,source,target,damage:d});continue;
                         }
                         self.health.explicit(source,target,d.amount,at)?;
-                        let hit=Hit { timestamp_ns: s.timestamp_ns,source,target,damage: d };
+                        let hit=Hit { timestamp_ns,source,target,damage: d };
                         self.meter.add(hit.clone())?;
                         if self.pending_skills.len()>=8192{return Err("pending skill capacity reached".into());}
                         self.pending_skills.push_back((hit,at,self.meter.last_hit_assignment(false).expect("accepted hit")));
@@ -145,7 +175,7 @@ impl Replay {
                         let source=self.meter.registry.observe_at(self.process,binding,a.actor,at)?;
                         let target=self.meter.registry.observe_at(self.process,binding,a.target,at)?;
                         let attack=Attack{source,target,key1:a.key1,key2:a.key2,meta:a.meta,at};
-                        self.health.attack(attack.clone())?;self.combat.attack(attack);self.meter.activity(source,target,s.timestamp_ns);
+                        self.health.attack(attack.clone())?;self.combat.attack(attack);self.meter.activity(source,target,timestamp_ns);
                     },_=>self.diagnostics.report("payload_rejected")
                 }}
                 Some(170205)=>{
@@ -155,17 +185,54 @@ impl Replay {
                         for estimate in self.health.update(target,hp,at)? {self.estimate(estimate)?;}
                     }else{self.diagnostics.report("payload_rejected");}
                 }
+                Some(w @ 170206..=170210)=>{
+                    if let Some(actor)=crate::protected_hp::message_actor(w,&frame.payload){
+                        let binding=if self.live_scope{self.meter.binding}else{(lineage<<32)|self.meter.binding};
+                        let target=self.meter.registry.observe_at(self.process,binding,actor,at)?;
+                        match self.protected_hp.decode(context,target,w,&frame.payload){
+                            Ok(hp)=>{
+                                if self.protected_hp_samples.len()==combat::HISTORY{self.protected_hp_samples.pop_front();self.protected_hp_evictions+=1;}
+                                self.protected_hp_samples.push_back((target,at,hp));self.diagnostics.report("protected_hp_decoded");
+                                for e in self.health.update(target,hp,at)?{self.estimate(e)?;}
+                            }
+                            Err(error)=>{
+                                self.health.clear_target(context,target);
+                                self.diagnostics.report(if error==crate::protected_hp::DecodeError::MissingIv{"protected_hp_missing_iv"}else{"protected_hp_rejected"});
+                            }
+                        }
+                    }else{self.invalidate_context(context);self.diagnostics.report("payload_rejected");}
+                }
                 Some(20590)=>{
-                    if let Some(personal)=identity::personal_prefix(&frame.payload) {
+                    let evidence=identity::tracking::Evidence{frame:self.frames,timestamp_ns,origin:identity::tracking::EvidenceOrigin::Packet{wire:20590}};
+                    if let Some(p)=identity::personal::parse(&frame.payload){
+                        let previous=self.meter.registry.personal_bindings.back().map(|p|p.key);
+                        let binding=if self.live_scope{self.meter.binding}else{(lineage<<32)|self.meter.binding};
+                        if let Some(key)=self.meter.registry.personal_actor(self.process,binding,(self.process,(lineage<<32)|self.meter.binding),p,evidence,at)?{
+                            if previous.is_some_and(|old|old!=key){self.invalidate_context(context);self.diagnostics.report("actor_binding_replaced");}
+                            self.diagnostics.report("personal_actor_binding");self.diagnostics.report("personal_identity");
+                        }else{self.diagnostics.report("stale_identity_ignored");}
+                    }else if let Some(personal)=identity::personal_prefix(&frame.payload) {
                         self.meter.registry.wire_personal(self.process,(lineage<<32)|self.meter.binding,personal,identity::tracking::Evidence {
-                            frame:self.frames,timestamp_ns:s.timestamp_ns,origin:identity::tracking::EvidenceOrigin::Packet {wire:20590}
+                            frame:self.frames,timestamp_ns,origin:identity::tracking::EvidenceOrigin::Packet {wire:20590}
                         })?;self.diagnostics.report("personal_identity");
                     }else {self.diagnostics.report("identity_unresolved");}
+                }
+                Some(20559)=>{
+                    if let Some(p)=identity::profile::parse(&frame.payload){
+                        let character=identity::Character::score2_appearance_uid(p.uid)?;
+                        let evidence=identity::tracking::Evidence{frame:self.frames,timestamp_ns,origin:identity::tracking::EvidenceOrigin::Packet{wire:20559}};
+                        if self.meter.registry.tracking.stale_identity(&character,evidence,(self.process,(lineage<<32)|self.meter.binding)){self.diagnostics.report("stale_identity_ignored");continue;}
+                        let binding=if self.live_scope{self.meter.binding}else{(lineage<<32)|self.meter.binding};
+                        if self.meter.registry.stale_actor_identity(self.process,binding,p.actor,evidence){self.diagnostics.report("stale_identity_ignored");continue;}
+                        let key=self.meter.registry.appearance(self.process,binding,identity::Appearance{actor:p.actor,name:p.name.clone(),uid:Some(p.uid),template:None,offset:8,record_reference:None})?;
+                        self.meter.registry.wire_named_appearance(key,character,Some(p.name),evidence,(self.process,(lineage<<32)|self.meter.binding))?;
+                        self.meter.registry.note_observed(key,at);self.diagnostics.report("profile_identity");
+                    }else{self.diagnostics.report("identity_unresolved");}
                 }
                 Some(170631) => {
                     if let Some(n)=identity::name_record(&frame.payload) {
                         self.meter.registry.name_metadata(n.uid,n.name,identity::tracking::Evidence {
-                            frame:self.frames,timestamp_ns:s.timestamp_ns,
+                            frame:self.frames,timestamp_ns,
                             origin:identity::tracking::EvidenceOrigin::Packet { wire:170631 }
                         },false)?;
                         self.diagnostics.report("name_metadata");
@@ -173,13 +240,16 @@ impl Replay {
                 }
                 Some(20054) => {
                     if let Ok(a)=identity::score2_layout::parse_jp_observed(&frame.payload) {
+                        if self.meter.registry.tracking.stale_identity(&a.identity,identity::tracking::Evidence{frame:self.frames,timestamp_ns,origin:identity::tracking::EvidenceOrigin::Packet{wire:20054}},(self.process,(lineage<<32)|self.meter.binding)){self.diagnostics.report("stale_identity_ignored");continue;}
                         let binding=if self.live_scope {self.meter.binding}else{(lineage<<32)|self.meter.binding};
+                        let source=identity::tracking::Evidence{frame:self.frames,timestamp_ns,origin:identity::tracking::EvidenceOrigin::Packet{wire:20054}};
+                        if self.meter.registry.stale_actor_identity(self.process,binding,a.actor,source){self.diagnostics.report("stale_identity_ignored");continue;}
                         let key=self.meter.registry.appearance(self.process,binding,identity::Appearance {
                             actor:a.actor,name:a.display_name.clone(),uid:a.identity.uid,template:None,
                             offset:a.uid_offset,record_reference:Some(a.outer_reference)
                         })?;
                         let source=identity::tracking::Evidence {
-                            frame:self.frames,timestamp_ns:s.timestamp_ns,
+                            frame:self.frames,timestamp_ns,
                             origin:identity::tracking::EvidenceOrigin::Packet { wire:20054 }
                         };
                         self.meter.registry.note_observed(key,at);
@@ -187,20 +257,48 @@ impl Replay {
                         self.diagnostics.report("structured_player_appearance");
                     } else if let Some(a)=identity::parse(20054,&frame.payload) {
                         let binding=if self.live_scope {self.meter.binding}else{(lineage<<32)|self.meter.binding};
+                        if self.meter.registry.current_key(self.process,binding,a.actor).is_some_and(|key|
+                            self.meter.registry.tracking.appearances.contains_key(&key) || self.meter.registry.owners.links.contains_key(&key)){
+                            self.diagnostics.report("legacy_player_metadata_only");continue;
+                        }
                         self.meter.registry.appearance(self.process,binding,a)?;
                         self.diagnostics.report("legacy_player_metadata_only");
                     } else { self.diagnostics.report("identity_unresolved"); }
                 }
                 Some(w @ (20517|20051)) => {
+                    let seed=crate::protected_hp::spawn_seed(w,&frame.payload);
+                    if seed.is_err(){
+                        let p=if w==20517{frame.payload.get(8..).unwrap_or(&[])}else{&frame.payload};
+                        let actor=if p.len()>=580{protocol::u64le(p,0)}else{0};
+                        let binding=if self.live_scope{self.meter.binding}else{(lineage<<32)|self.meter.binding};
+                        let known=if actor>0 && actor<=u32::MAX as u64 && protocol::u64le(p,572)==actor{
+                            self.meter.registry.current_key(self.process,binding,actor as u32)
+                        }else{None};
+                        if let Some(target)=known{self.health.clear_target(context,target);self.protected_hp.forget_at(context,target);}
+                        else{self.invalidate_context(context);self.protected_hp.clear_context(context);}
+                        self.diagnostics.report("protected_hp_seed_rejected");continue;
+                    }
                     if let Some(spawn)=identity::ownership::parse(w,&frame.payload){
                         let binding=if self.live_scope{self.meter.binding}else{(lineage<<32)|self.meter.binding};
-                        let key=self.meter.registry.owned_spawn(self.process,binding,spawn,identity::tracking::Evidence{frame:self.frames,timestamp_ns:s.timestamp_ns,origin:identity::tracking::EvidenceOrigin::Packet{wire:w}})?;
+                        let key=self.meter.registry.owned_spawn(self.process,binding,spawn,identity::tracking::Evidence{frame:self.frames,timestamp_ns,origin:identity::tracking::EvidenceOrigin::Packet{wire:w}})?;
                         self.meter.registry.note_observed(key,at);if let Some(owner)=self.meter.registry.owner(key){self.meter.registry.note_observed(owner,at);}
                         self.diagnostics.report("pet_ownership");
                     }else if let Some(a) = identity::parse(w,&frame.payload) {
                         let binding=if self.live_scope {self.meter.binding}else{(lineage<<32)|self.meter.binding};
                         let key=self.meter.registry.appearance(self.process,binding,a)?;self.meter.registry.note_observed(key,at);
                     } else { self.diagnostics.report("identity_unresolved"); }
+                    match seed{
+                        Ok(Some(seed))=>{
+                            let binding=if self.live_scope{self.meter.binding}else{(lineage<<32)|self.meter.binding};
+                            let target=self.meter.registry.observe_at(self.process,binding,seed.actor,at)?;
+                            let changed=self.protected_hp.register(context,target,&seed)?;
+                            if changed{self.health.clear_target(context,target);}
+                            if self.protected_hp_seeds.len()==128{self.protected_hp_seeds.pop_front();self.diagnostics.report("protected_hp_seed_eviction");}
+                            self.protected_hp_seeds.push_back((target,at,seed.iv_offset,seed.initial_hp,changed));self.diagnostics.report("protected_hp_seed");
+                            for e in self.health.update(target,seed.initial_hp,at)?{self.estimate(e)?;}
+                        }
+                        Ok(None)=>(),Err(_)=>self.diagnostics.report("protected_hp_seed_rejected"),
+                    }
                 }
                 Some(170064)=>{
                     if let Some(a)=combat::action(&frame.payload){
@@ -245,11 +343,24 @@ impl Replay {
                     }
                 }
                 Some(20684|20686|20687|171124|170197)=>{},
+                Some(170822) if frame.payload.len()==20=>{
+                    let actor=protocol::u64le(&frame.payload,0);
+                    if actor>0 && actor<=u32::MAX as u64 && [8,12,16].iter().all(|n|f32::from_bits(protocol::u32le(&frame.payload,*n)).is_finite()){
+                        let binding=if self.live_scope{self.meter.binding}else{(lineage<<32)|self.meter.binding};
+                        self.meter.registry.observe_at(self.process,binding,actor as u32,at)?;
+                    }else{self.diagnostics.report("payload_rejected");}
+                }
                 Some(20344 | 20552) => {
                     self.diagnostics.report("scene_marker"); self.meter.event(Event::Rebroadcast)?;
                 }
                 Some(_) => self.diagnostics.report("unknown_opcode"), None => (),
             }
+        }
+        if s.fin{*self.fins.entry(lineage).or_default()|=1<<direction;}
+        if s.rst || self.fins.get(&lineage)==Some(&3) {
+            self.meter.registry.tracking.transport_closed((self.process,(lineage<<32)|self.meter.binding),identity::tracking::Evidence {
+                frame:self.frames,timestamp_ns:s.timestamp_ns,origin:identity::tracking::EvidenceOrigin::Semantic
+            })?;
         }
         if s.rst {
             self.invalidate_context(lineage*2);self.invalidate_context(lineage*2+1);
@@ -305,8 +416,19 @@ impl Replay {
         self.meter.tick(now);Ok(())
     }
     pub fn reset_inference(&mut self) {self.health.clear();if self.finalize_skills(None).is_err(){self.diagnostics.report("skill_capacity");}self.combat.attacks.clear();}
+    /// For an independently verified room transition in the same run. No JP
+    /// scene marker is sufficient to invoke this. Preserve actors/participants,
+    /// ownership and decryption keys while ending transient causal continuity.
+    pub fn internal_transition(&mut self,evidence:u64)->Result<()>{
+        if self.meter.transition_seen(evidence){return Ok(());}
+        self.finalize_skills(None)?;
+        let contexts:Vec<_>=self.continuities.keys().copied().collect();
+        for context in contexts{self.invalidate_context(context);}
+        self.meter.event(Event::InternalTransition{evidence})
+    }
     pub fn process_replacement(&mut self,epoch:u64)->Result<()> {
-        self.continuities.clear();self.context_orders.clear();self.health.clear();self.finalize_skills(None)?;self.combat.clear();self.timeline.clear();self.last_clock.clear();self.streams.clear();self.syns.clear();self.connections.clear();self.buffered=0;
+        self.protected_hp.clear();
+        self.continuities.clear();self.context_orders.clear();self.health.clear();self.finalize_skills(None)?;self.combat.clear();self.timeline.clear();self.last_clock.clear();self.streams.clear();self.syns.clear();self.connections.clear();self.next_lineage=0;self.fins.clear();self.buffered=0;
         self.process=epoch;self.meter.event(Event::ProcessReplacement{evidence:epoch})
     }
     pub fn load(path: &Path, port: Option<u16>, aligned: bool) -> Result<Self> {
@@ -315,12 +437,12 @@ impl Replay {
     }
     pub fn audit(&self) -> Value {
         let s = self.meter.snapshot();
-        json!({ "format": "mabi-dps-rust-replay-v2", "protocol_profile": protocol::PROFILE,
+        let mut audit=json!({ "format": "mabi-dps-rust-replay-v3", "protocol_profile": protocol::PROFILE,
             "attribution_policy":{"candidate_ns":combat::EVENT_NS,"evidence_wait_ns":crate::health::WAIT_NS,"candidate_frames":combat::EVENT_FRAMES,"fallback":"equal distinct attacker shares; rotating integer remainder","clock_policy":"partial ordering only; no exact HP server timestamp"},
             "hp_accounting":{"refinement_evictions":self.health.refinement_evictions,"refinements":self.health.refinements.iter().map(|r|json!({"interval":r.interval,"source":key_json(r.source),"amount":r.amount,"at":stamp_json(r.at),"attack_frames":r.attack_frames,"method":"late explicit refines provisional allocation before commit"})).collect::<Vec<_>>(),"loss":self.health.loss.to_string(),"matched_explicit":self.health.explicit.to_string(),"allocated":self.health.allocated.to_string(),"unassigned":self.health.unassigned.to_string(),"outcomes":self.health.outcomes,"audit_evictions":self.health.audit_evictions,
                 "intervals":self.health.audit.iter().map(|a|json!({"id":a.id,"target":key_json(a.target),"at":stamp_json(a.at),"baseline":stamp_json(a.baseline),"hp_before":a.hp_before,"hp_after":a.hp_after,"loss":a.loss,"explicit":a.explicit,"residual":a.residual,"unassigned":a.unassigned,"reason":a.reason,"explicit_mismatch":a.explicit_mismatch,"candidates":a.candidates.iter().map(|k|key_json(*k)).collect::<Vec<_>>(),"evidence_frames":a.evidence,"allocations":a.allocations.iter().map(|e|json!({"source":key_json(e.source),"amount":e.amount,"skill":e.skill,"method":e.method,"evidence_frames":e.frames})).collect::<Vec<_>>()})).collect::<Vec<_>>()},
             "ownership":self.meter.registry.owners.links.values().map(|l|json!({"pet":key_json(l.pet),"owner":key_json(l.owner),"template":l.template,"kind":l.kind,"outer_reference":l.outer,"conflicting":l.conflicting,"conflict_evidence":l.conflict_evidence.map(|(owner,e)|json!({"owner":key_json(owner),"frame":e.frame,"timestamp_ns":e.timestamp_ns})),"frame":l.evidence.frame,"wire":format!("{:?}",l.evidence.origin)})).collect::<Vec<_>>(),
-            "identity_timing":self.meter.registry.timing.iter().map(|(k,t)|json!({"entity":key_json(*k),"first":t.first.map(stamp_json),"identity_received_ns":t.received.map(|e|e.timestamp_ns),"binding_resolved_ns":t.resolved.map(|e|e.timestamp_ns)})).collect::<Vec<_>>(),
+            "identity_timing":self.meter.registry.timing.iter().map(|(k,t)|json!({"entity":key_json(*k),"first":t.first.map(stamp_json),"last":t.last.map(stamp_json),"identity_received_ns":t.received.map(|e|e.timestamp_ns),"binding_resolved_ns":t.resolved.map(|e|e.timestamp_ns)})).collect::<Vec<_>>(),
             "timeline":{"bounds":self.timeline.bounds.values().map(|b|json!({"at":stamp_json(b.at),"lower":b.lower.map(|p|json!({"epoch":p.epoch,"ticks":p.ticks,"frame":p.frame})),"upper":b.upper.map(|p|json!({"epoch":p.epoch,"ticks":p.ticks,"frame":p.frame})),"interpretation":"partial clock/order bracket; not exact event time"})).collect::<Vec<_>>(),"evictions":self.timeline.evictions,"samples":self.timeline.samples.iter().map(|t|json!({"at":stamp_json(t.at),"wire":t.wire,"raw":t.raw,"unwrapped_ticks":t.ticks,"epoch":t.epoch,"interpretation":t.interpretation})).collect::<Vec<_>>()},
             "combat_evidence":{"confirmed_crosswalks":self.combat.confirmed_executions,"ended_effect_evictions":self.combat.ended_evictions,"ended_effects":self.combat.ended_effects.iter().map(|(e,at)|json!({"affected":key_json(e.affected),"source":e.source.map(key_json),"instance":e.instance.to_string(),"id":e.id,"first":stamp_json(e.first),"last_snapshot":stamp_json(e.last),"removed":stamp_json(*at)})).collect::<Vec<_>>(),"evictions":self.combat.evictions,"effect_updates":self.combat.effect_updates,"effect_removals":self.combat.removals,
                 "attacks":self.combat.attacks.iter().map(|a|json!({"source":key_json(a.source),"target":key_json(a.target),"key1":a.key1,"key2":a.key2,"meta":hex(&a.meta),"at":stamp_json(a.at)})).collect::<Vec<_>>(),
@@ -347,7 +469,17 @@ impl Replay {
             "identity_evidence": self.evidence.iter().map(evidence_json).collect::<Vec<_>>(),
             "frames": self.frame_history.iter().map(evidence_json).collect::<Vec<_>>(),
             "estimated_allocations":self.meter.inferred_hits.iter().map(|h|json!({"timestamp_ns":h.timestamp_ns,"source":key_json(h.source),"target":key_json(h.target),"amount":h.damage.amount})).collect::<Vec<_>>(),
-            "disabled_adapters": ["JP20344/20552 transitions","unseen JP appearance profiles","unvalidated periodic damage ticks","universal VFX damage matching"] })
+            "disabled_adapters": ["JP20344/20552 transitions","unseen JP appearance profiles","unvalidated periodic damage ticks","universal VFX damage matching"] });
+        audit["protected_hp"]=json!({"key_count":self.protected_hp.key_count(),"sample_evictions":self.protected_hp_evictions,
+            "seeds":self.protected_hp_seeds.iter().map(|(key,at,offset,hp,changed)|json!({"target":key_json(*key),"at":stamp_json(*at),"iv_offset":offset,"initial_hp":hp,"changed":changed,"method":"AES-128-CBC actor key; spawn IV; strict padding"})).collect::<Vec<_>>(),
+            "samples":self.protected_hp_samples.iter().map(|(key,at,hp)|json!({"target":key_json(*key),"at":stamp_json(*at),"hp":hp})).collect::<Vec<_>>()});
+        audit["participants"]=json!(self.meter.registry.records.iter().map(|(key,m)|json!({"entity":key_json(*key),"participant":self.meter.registry.participant(*key),"state":self.meter.registry.binding_state(*key),"kind":m.kind,"uid":m.uid,"name":m.name})).collect::<Vec<_>>());
+        audit["personal_bindings"]=json!({"evictions":self.meter.registry.personal_binding_evictions,"proofs":self.meter.registry.personal_bindings.iter().map(|p|json!({"entity":key_json(p.key),"frame":p.evidence.frame,"capture_ns":p.evidence.timestamp_ns,"offset":p.offset,"end":p.end,"pets":p.pets.iter().map(|p|json!({"persistent":p.persistent.to_string(),"template":p.template})).collect::<Vec<_>>(),"method":"complete personal pet collection and selected-key suffix"})).collect::<Vec<_>>()});
+        audit["identity_candidates"]=json!(self.meter.registry.tracking.candidates.values().map(|c|json!({"old":key_json(c.old),"new":key_json(c.new),"frame":c.source.frame,"reason":c.reason})).collect::<Vec<_>>());
+        audit["identity_transitions"]=json!({"evictions":self.meter.registry.tracking.event_evictions,
+            "closed_contexts":self.meter.registry.tracking.closed_contexts().map(|((process,context),e)|json!({"process":process,"context":context,"frame":e.frame,"capture_ns":e.timestamp_ns})).collect::<Vec<_>>(),
+            "events":self.meter.registry.tracking.events.iter().map(|e|json!({"revision":e.revision,"reason":e.reason,"entity":e.key.map(key_json),"source":e.source.map(|s|json!({"frame":s.frame,"capture_ns":s.timestamp_ns,"origin":format!("{:?}",s.origin)}))})).collect::<Vec<_>>()});
+        audit
     }
 }
 fn hex(p: &[u8]) -> String { p.iter().map(|b| format!("{b:02X}")).collect() }
@@ -367,7 +499,7 @@ pub fn snapshot_json(s: &Snapshot) -> Value {
     // Decimal strings preserve u128 values in JSON consumers without bigint support.
     json!({ "damage": s.summary.damage.to_string(),"hits": s.summary.hits,
         "start_ns": s.summary.start,"end_ns": s.summary.end,"duration_seconds": s.summary.duration(),
-        "dps": s.summary.dps(),"source_count": s.source_count,"target_count": s.target_count,
+        "dps": s.summary.dps(),"source_count": s.source_count,"target_count": s.target_count,"remembered_players":s.remembered_players,
         "revision": s.revision,"identity_revision": s.identity_revision,"last_command": s.last_command,
         "self_identity": {"key": s.self_binding.key.map(key_json),
             "evidence": format!("{:?}",s.self_binding.evidence),"primary_locked": s.self_binding.primary_locked,

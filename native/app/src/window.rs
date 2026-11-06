@@ -258,8 +258,8 @@ impl State {
                 let points:Vec<_>=s.chart.iter().map(|v|Point{x:chart_left+(v.0/duration*(chart_right-chart_left) as f64) as i32,y:chart_bottom-((if index==1{v.1}else{v.2})/peak*(chart_bottom-chart_top) as f64) as i32}).collect();
                 if points.len()>1{let pen=CreatePen(0,p(2).max(1),color);let previous=SelectObject(dc,pen);Polyline(dc,points.as_ptr(),points.len() as i32);SelectObject(dc,previous);DeleteObject(pen);}
             }
-            let coverage=if s.partial{"Partial coverage"}else{""};
-            self.text(dc,coverage,Rect{left:p(20),top:r.bottom-p(43),right:r.right-p(20),bottom:r.bottom-p(23)},muted,false);
+            let coverage=format!("{} players remembered{}",s.remembered_players,if s.partial{" · Partial coverage"}else{""});
+            self.text(dc,&coverage,Rect{left:p(20),top:r.bottom-p(43),right:r.right-p(20),bottom:r.bottom-p(23)},muted,false);
         }
         self.text(dc,&self.status,Rect{left:p(20),top:r.bottom-p(24),right:r.right-p(20),bottom:r.bottom-p(4)},muted,false);
         SelectObject(dc,old);

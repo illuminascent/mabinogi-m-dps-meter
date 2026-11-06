@@ -20,8 +20,12 @@ pub struct Segment {
 pub fn distance(seq: u32, expected: u32) -> i64 { seq.wrapping_sub(expected) as i32 as i64 }
 
 #[derive(Default)]
-pub struct Framer { pub buffer: Vec<u8>, pub aligned: bool,pub consumed:u64 }
+pub struct Framer { pub buffer: Vec<u8>, pub aligned: bool,pub consumed:u64, gap_pending:bool }
 impl Framer {
+    fn discontinue(&mut self,missing:u64) {
+        self.consumed+=self.buffer.len() as u64+missing;
+        self.buffer.clear();self.aligned=false;self.gap_pending=true;
+    }
     pub fn feed(&mut self, data: &[u8], diag: &mut Diagnostics) -> Result<Vec<Frame>> {
         if self.buffer.len()+data.len() > MAX_BUFFER { return Err("framing capacity reached".into()); }
         self.buffer.extend_from_slice(data);
@@ -50,7 +54,7 @@ impl Framer {
                 if anchored { candidate = Some(f); } anchored
             } else { false };
             if !valid || !anchor {
-                if self.aligned { diag.report("alignment_lost"); }
+                if self.aligned { diag.report("alignment_lost");self.gap_pending=true; }
                 self.aligned = false; offset += 1; skipped = true; continue;
             }
             if p.len() < header+len { break; }
@@ -59,7 +63,8 @@ impl Framer {
             f.stream_byte=self.consumed+offset as u64;
             decoded_bytes += f.payload.len();
             if decoded_bytes > protocol::MAX_DECODED { return Err("decoded delivery capacity reached".into()); }
-            if !f.decoded { diag.report("frame_rejected"); }
+            if !f.decoded { diag.report("frame_rejected");self.gap_pending=true; }
+            f.gap_before=std::mem::take(&mut self.gap_pending);
             self.aligned = true; offset += f.consumed; frames.push(f);
         }
         self.buffer.drain(..offset);self.consumed+=offset as u64;
@@ -71,24 +76,28 @@ impl Framer {
 pub struct TcpStream {
     pub framer: Framer,
     expected: Option<u32>, syn_seq: Option<u32>, fin_seq: Option<u32>,
-    pending: Vec<(u32,Vec<u8>)>, gap_since: Option<u64>, pub closed: bool,
+    pending: Vec<(u32,Vec<u8>,u64)>, gap_since: Option<u64>, pub closed: bool,
+    buffer_time:u64,
 }
 impl TcpStream {
     pub fn new(aligned: bool) -> Self {
-        Self { framer: Framer { buffer: Vec::new(), aligned,consumed:0 }, expected: None, syn_seq: None,
-            fin_seq: None, pending: Vec::new(), gap_since: None, closed: false }
+        Self { framer: Framer { aligned,..Framer::default() }, expected: None, syn_seq: None,
+            fin_seq: None, pending: Vec::new(), gap_since: None, closed: false,buffer_time:0 }
     }
     pub fn buffered(&self) -> usize {
-        self.framer.buffer.len() + self.pending.iter().map(|(_,p)| p.len()).sum::<usize>()
+        self.framer.buffer.len() + self.pending.iter().map(|(_,p,_)| p.len()).sum::<usize>()
     }
     pub fn reset(&mut self, aligned: bool) {
+        let prior=self.expected.is_some();
         self.expected = None; self.fin_seq = None; self.pending.clear(); self.gap_since = None;
-        self.framer.buffer.clear(); self.framer.aligned = aligned;
+        self.framer.discontinue(0); self.framer.aligned = aligned;self.buffer_time=0;
+        self.framer.gap_pending=prior;
     }
     pub fn finish(&self, diag: &mut Diagnostics) {
         if !self.pending.is_empty() || self.fin_seq.is_some() { diag.report("tcp_gap_at_eof"); }
         if !self.framer.buffer.is_empty() { diag.report("frame_tail_at_eof"); }
     }
+    pub fn starts_after_fin(&self,seq:u32)->bool{self.closed && self.expected.is_some_and(|next|distance(seq,next)>=0)}
     pub fn feed(&mut self, s: &Segment, diag: &mut Diagnostics) -> Result<Vec<Frame>> {
         if s.rst {
             if self.buffered() > 0 || self.fin_seq.is_some() { diag.report("reset_with_buffer"); }
@@ -101,9 +110,6 @@ impl TcpStream {
         }
         let original_seq = s.seq.wrapping_add(u32::from(s.syn));
         if self.expected.is_none() { self.expected = Some(original_seq); }
-        if self.gap_since.is_some_and(|t| s.timestamp_ns.saturating_sub(t) > GAP_NS) {
-            diag.report("tcp_gap_timeout"); self.reset(false); self.expected = Some(original_seq);
-        }
         let expected = self.expected.unwrap(); let mut seq = original_seq;
         let delta = distance(seq,expected); let mut p = s.payload.as_slice();
         if delta < 0 {
@@ -112,7 +118,7 @@ impl TcpStream {
         if !p.is_empty() {
             // Subtract all earlier pending intervals before accepting new bytes.
             let mut pieces = vec![(seq,p.to_vec())];
-            for (old_seq,old) in &self.pending {
+            for (old_seq,old,_) in &self.pending {
                 let start = distance(*old_seq,expected); let end = start+old.len() as i64;
                 let mut remaining = Vec::new();
                 for (seq,p) in pieces {
@@ -125,26 +131,41 @@ impl TcpStream {
                 }
                 pieces = remaining;
             }
-            self.pending.extend(pieces);
+            self.pending.extend(pieces.into_iter().map(|(seq,p)|(seq,p,s.timestamp_ns)));
         }
         // FIN uses original sequence space, even when retransmitted bytes were trimmed.
         if s.fin { self.fin_seq = Some(original_seq.wrapping_add(s.payload.len() as u32)); }
         if self.pending.len() > MAX_PENDING || self.buffered() > MAX_BUFFER {
             diag.report("tcp_pending_overflow"); self.reset(false); return Ok(Vec::new());
         }
-        self.pending.sort_by_key(|(seq,_)| distance(*seq,expected));
+        self.pending.sort_by_key(|(seq,_,_)| distance(*seq,expected));
         let mut frames = Vec::new();
         let mut delivery_bytes = 0;
-        while !self.pending.is_empty() && distance(self.pending[0].0,self.expected.unwrap()) <= 0 {
-            let (seq,p) = self.pending.remove(0);
+        while !self.pending.is_empty() {
+            let missing=distance(self.pending[0].0,self.expected.unwrap());
+            if missing>0 {
+                // Skip only the missing range, never the retained suffix. Each
+                // further hole gets its own bounded wait. Framing must reacquire
+                // a validated anchor, and replay sees the boundary before data.
+                let since=self.gap_since.get_or_insert(self.pending[0].2);
+                if s.timestamp_ns.saturating_sub(*since)<=GAP_NS{break;}
+                diag.report("tcp_gap_timeout");diag.report("tcp_gap_recovered");
+                self.framer.discontinue(missing as u64);self.buffer_time=0;
+                self.expected=Some(self.pending[0].0);self.gap_since=None;
+            }
+            let (seq,p,time) = self.pending.remove(0);
             let trim = (-distance(seq,self.expected.unwrap())) as usize;
             if trim < p.len() {
                 self.expected = Some(self.expected.unwrap().wrapping_add((p.len()-trim) as u32));
-                let decoded = self.framer.feed(&p[trim..],diag)?;
+                let old_end=self.framer.consumed+self.framer.buffer.len() as u64;
+                let mut decoded = self.framer.feed(&p[trim..],diag)?;
+                for f in &mut decoded {f.timestamp_ns=Some(if f.stream_byte<old_end{self.buffer_time.max(time)}else{time});}
+                self.buffer_time=if self.framer.consumed<old_end{self.buffer_time.max(time)}else{time};
                 delivery_bytes += decoded.iter().map(|f| f.payload.len()).sum::<usize>();
                 if delivery_bytes > protocol::MAX_DECODED { return Err("decoded delivery capacity reached".into()); }
                 frames.extend(decoded);
             }
+            self.gap_since=None;
         }
         let waiting_fin = self.fin_seq.is_some_and(|seq| distance(seq,self.expected.unwrap()) > 0);
         if !self.pending.is_empty() || waiting_fin { self.gap_since.get_or_insert(s.timestamp_ns); }

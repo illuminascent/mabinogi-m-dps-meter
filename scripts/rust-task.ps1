@@ -45,7 +45,7 @@ if ($dockerBuild) {
             '--env','RUSTFLAGS=-C target-feature=+crt-static')
     }
     if ($Task -eq 'Test' -and $LocalFixtures) {
-        foreach ($fixture in @('combat-research-20261106.json','live-native-07.jsonl','ui-name-entry-02.jsonl','rust-current-dummy-20261105-195023.jsonl','rust-identity-profile-20261105-205033.jsonl','jp-appearance-native-fixture.json','jp-identity-research-long-five-self-joins.jsonl','jp-identity-research-long-focused-tcp.jsonl')) {
+        foreach ($fixture in @('actor-continuity-20261106.json','protected-hp-raid-20261106.json','combat-research-20261106.json','live-native-07.jsonl','ui-name-entry-02.jsonl','rust-current-dummy-20261105-195023.jsonl','rust-identity-profile-20261105-205033.jsonl','jp-appearance-native-fixture.json','jp-identity-research-long-five-self-joins.jsonl','jp-identity-research-long-focused-tcp.jsonl')) {
             $fixturePath = Join-Path $repoRoot ".local/test-fixtures/$fixture"
             if (-not (Test-Path -LiteralPath $fixturePath)) { throw "Missing private fixture: $fixture" }
             $dockerArgs += @('--mount',"type=bind,source=$fixturePath,target=/repo/.local/test-fixtures/$fixture,readonly")

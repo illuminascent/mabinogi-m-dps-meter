@@ -334,7 +334,10 @@ fn current_game_profile_action_preserves_numeric_parity_without_inventing_self()
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/test-fixtures");
     let r = Replay::load(&root.join("rust-identity-profile-20261105-205033.jsonl"),None,false).unwrap();
     let s = r.meter.snapshot();
-    assert_eq!(r.frames,11346);assert_eq!(s.summary.damage,7_475_691);assert_eq!(s.summary.hits,430);
+    // Gap recovery retains 32 additional explicit records (371,158 damage).
+    // The original 430 explicit records are unchanged in the multiset audit.
+    assert_eq!(r.frames,12264);assert_eq!(s.summary.damage,7_846_849);assert_eq!(s.summary.hits,462);
+    assert_eq!(r.diagnostics.0["tcp_gap_recovered"],1);
     assert_eq!(s.summary.end.unwrap()-s.summary.start.unwrap(),44_367_453_700);
     assert_eq!(s.source_count,2);assert!(s.partial);assert_eq!(r.meter.registry.self_key,None);
     assert_eq!(r.meter.registry.profile_names.len(),5);assert!(r.meter.registry.tracking.personal.is_none());
@@ -353,9 +356,11 @@ fn real_fixture_07_numeric_parity() {
 fn real_entry_numeric_parity() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/test-fixtures");
     let r = Replay::load(&root.join("ui-name-entry-02.jsonl"),None,false).unwrap();let s = r.meter.snapshot();
-    assert_eq!(s.summary.damage,96_297_101);assert_eq!(s.summary.hits,5837);
+    // Retained suffixes add 189 records / 3,746,166 damage after six holes.
+    assert_eq!(s.summary.damage,100_043_267);assert_eq!(s.summary.hits,6026);
+    assert_eq!(r.diagnostics.0["tcp_gap_recovered"],6);
     assert_eq!(s.summary.end.unwrap()-s.summary.start.unwrap(),581_169_047_500);
-    assert!((s.summary.dps().unwrap()-165_695.50875814664).abs() < 0.000001);
+    assert!((s.summary.dps().unwrap()-172_141.4232749551).abs() < 0.000001);
     assert_eq!(s.target_count,4);
     assert!(s.targets.iter().all(|(_,label)| !label.starts_with("Name pending")));
 }
@@ -365,13 +370,15 @@ fn current_game_dummy_numeric_parity() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/test-fixtures");
     let r = Replay::load(&root.join("rust-current-dummy-20261105-195023.jsonl"),None,false).unwrap();
     let s = r.meter.snapshot();
-    assert_eq!(r.frames,6419);assert_eq!(s.summary.damage,3_858_781);assert_eq!(s.summary.hits,235);
+    // Retained suffixes add 68 records / 978,881 damage after three holes.
+    assert_eq!(r.frames,7986);assert_eq!(s.summary.damage,4_837_662);assert_eq!(s.summary.hits,303);
+    assert_eq!(r.diagnostics.0["tcp_gap_recovered"],3);
     assert_eq!(s.summary.end.unwrap()-s.summary.start.unwrap(),29_574_129_000);
     assert_eq!(s.source_count,2);assert_eq!(s.target_count,4);assert!(s.partial);
     assert_eq!(r.evidence.len(),1);assert_eq!(r.evidence[0].wire,Some(170631));
     assert_eq!(r.meter.registry.profile_names.len(),1);assert_eq!(r.meter.registry.self_key,None);
     assert!(s.rows.iter().all(|row| !row.named));
     assert!(!r.diagnostics.0.contains_key("frame_rejected"));
-    let audit = r.audit();assert_eq!(audit["frame_count"].as_u64(),Some(6419));
+    let audit = r.audit();assert_eq!(audit["frame_count"].as_u64(),Some(7986));
     assert_eq!(audit["frames"].as_array().unwrap().len(),4096);
 }

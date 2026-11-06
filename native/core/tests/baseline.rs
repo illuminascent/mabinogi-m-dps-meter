@@ -222,6 +222,82 @@ fn ipv4_tcp(data: &[u8],vlan: bool) -> Vec<u8> {
     assert_eq!(capture_file::tcp_packet(&ip,229,0).unwrap().unwrap().flow.src,"::1");
     ip[6]=44;assert!(capture_file::tcp_packet(&ip,229,0).is_err());
 }
+fn wifi_packet(body: &[u8],ds: u16,qos: bool,ht: bool,aggregate: bool) -> Vec<u8> {
+    let fc=0x0008|ds|if qos {0x0080} else {0}|if ht {0x8000} else {0};
+    let mut p=vec![0;if ds==0x0300 {30} else {24}];
+    p[..2].copy_from_slice(&fc.to_le_bytes());
+    if qos {p.extend([if aggregate {0x80} else {0},0]);if ht {p.extend([0;4]);}}
+    p.extend(body);p
+}
+fn wifi_snap(ethernet: &[u8]) -> Vec<u8> {
+    let mut p=vec![0xaa,0xaa,3,0,0,0];p.extend_from_slice(&ethernet[12..]);p
+}
+#[test] fn packet_monitor_wifi_dispatch_preserves_tcp_and_damage() {
+    let eth=ipv4_tcp(&frame(123),false);
+    let expected=capture_file::tcp_packet(&eth,1,987).unwrap().unwrap();
+    for ds in [0,0x0100,0x0200,0x0300] {for (qos,ht) in [(false,false),(false,true),(true,false),(true,true)] {
+        for vlan in [false,true] {
+            let eth=ipv4_tcp(&frame(123),vlan);
+            let p=wifi_packet(&wifi_snap(&eth),ds,qos,ht,false);
+            let segments=capture_file::packet_monitor_tcp(&p,2,987).unwrap();
+            assert_eq!(segments.len(),1);
+            let actual=&segments[0];assert_eq!(actual.flow,expected.flow);
+            assert_eq!(actual.timestamp_ns,987);assert_eq!(actual.seq,1000);
+            assert_eq!(actual.payload,expected.payload);assert!(actual.ack);
+            let mut replay=Replay::new(true);replay.feed(Input::Segment(actual.clone())).unwrap();
+            assert_eq!(replay.meter.snapshot().summary.damage,123);
+        }
+    }}
+    for (p,kind) in [(&eth[..],1),(&eth[14..],3)] {
+        let s=capture_file::packet_monitor_tcp(p,kind,987).unwrap();
+        assert_eq!(s.len(),1);assert_eq!(s[0].payload,expected.payload);
+    }
+    assert!(capture_file::packet_monitor_tcp(&eth,0,0).unwrap().is_empty());
+    assert!(capture_file::packet_monitor_tcp(&eth,5,0).unwrap().is_empty());
+}
+#[test] fn packet_monitor_wifi_ipv6_and_plaintext_protected_flag() {
+    let mut ip=vec![0;60];ip[0]=0x60;ip[4..6].copy_from_slice(&20u16.to_be_bytes());ip[6]=6;
+    ip[23]=1;ip[39]=2;ip[40..42].copy_from_slice(&1234u16.to_be_bytes());
+    ip[42..44].copy_from_slice(&2345u16.to_be_bytes());ip[52]=0x50;
+    let mut snap=vec![0xaa,0xaa,3,0,0,0xf8,0x86,0xdd];snap.extend(ip);
+    let mut p=wifi_packet(&snap,0x0200,true,true,false);p[1]|=0x40;
+    let s=capture_file::packet_monitor_tcp(&p,2,123).unwrap();
+    assert_eq!(s.len(),1);assert_eq!(s[0].flow.src,"::1");assert_eq!(s[0].flow.dst,"::2");
+    assert_eq!(s[0].flow.dport,2345);
+}
+#[test] fn packet_monitor_wifi_aggregate_and_truncated_tail() {
+    let mut body=Vec::new();
+    for amount in [12,34] {
+        if !body.is_empty(){while body.len()%4!=0 {body.push(0);}}
+        let snap=wifi_snap(&ipv4_tcp(&frame(amount),false));
+        body.extend([0;12]);body.extend((snap.len() as u16).to_be_bytes());body.extend(snap);
+    }
+    let p=wifi_packet(&body,0x0200,true,false,true);
+    let segments=capture_file::packet_monitor_tcp(&p,2,123).unwrap();
+    assert_eq!(segments.len(),2);assert_eq!(segments[0].payload,frame(12));assert_eq!(segments[1].payload,frame(34));
+    // A valid first subframe must not escape when the final subframe is cut.
+    for end in 27..p.len() {
+        let result=capture_file::packet_monitor_tcp(&p[..end],2,123);
+        if let Ok(s)=result {assert_eq!(s.len(),1);} // Exact first-subframe boundary is valid.
+    }
+    assert!(capture_file::packet_monitor_tcp(&p[..p.len()-1],2,123).is_err());
+}
+#[test] fn packet_monitor_wifi_rejects_truncation_and_fragments_ignores_non_ip() {
+    let p=wifi_packet(&wifi_snap(&ipv4_tcp(&frame(12),false)),0x0300,true,true,false);
+    for end in 0..p.len() {assert!(capture_file::packet_monitor_tcp(&p[..end],2,0).is_err(),"accepted prefix {end}");}
+    for (offset,flag) in [(1,4),(22,1)] {
+        let mut bad=p.clone();bad[offset]|=flag;
+        assert!(capture_file::packet_monitor_tcp(&bad,2,0).is_err());
+    }
+    for fc in [0x0080u16,0x00d4,0x0048,0x00c8] {
+        assert!(capture_file::packet_monitor_tcp(&fc.to_le_bytes(),2,0).unwrap().is_empty());
+    }
+    for body in [&[0u8;40][..],&[0xaa,0xaa,3,0,0,0,8,6,0,0][..]] {
+        let p=wifi_packet(body,0x0200,false,false,false);
+        assert!(capture_file::packet_monitor_tcp(&p,2,0).unwrap().is_empty());
+    }
+    let mut bad=p;bad[0]|=1;assert!(capture_file::packet_monitor_tcp(&bad,2,0).is_err());
+}
 struct TestFile(std::path::PathBuf);
 impl Drop for TestFile { fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); } }
 fn test_file(bytes: &[u8]) -> TestFile {

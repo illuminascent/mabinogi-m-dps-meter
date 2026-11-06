@@ -93,6 +93,75 @@ fn pcap(r: &mut impl Read, port: u16, mut consume: impl FnMut(Input)->Result<()>
     Ok(())
 }
 
+/// Packet Monitor payload kinds are not PCAP link types. In particular, kind 2
+/// is native 802.11, not Ethernet. Keep this dispatch shared with the live worker
+/// so Wi-Fi frames pass through the same IP/TCP checks and ownership holdback.
+/// API: https://learn.microsoft.com/windows/win32/pktmon/packetmonitor/nf-packetmonitor-packetmonitorcreaterealtimestream
+pub fn packet_monitor_tcp(p: &[u8], kind: u16, timestamp_ns: u64) -> Result<Vec<Segment>> {
+    match kind {
+        1 => Ok(tcp_packet(p,1,timestamp_ns)?.into_iter().collect()),
+        2 => wifi_tcp(p,timestamp_ns),
+        3 => Ok(tcp_packet(p,101,timestamp_ns)?.into_iter().collect()),
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn wifi_tcp(p: &[u8], timestamp_ns: u64) -> Result<Vec<Segment>> {
+    if p.len()<2 { return Err("short Wi-Fi frame control".into()); }
+    let fc=u16::from_le_bytes([p[0],p[1]]);
+    // Only version-0 data-bearing frames. Management, control and null data
+    // frames carry no IP payload. Addresses depend on ToDS/FromDS, not IP flow.
+    if fc&3!=0 { return Err("Wi-Fi protocol version".into()); }
+    if fc&0x000c!=0x0008 || fc&0x0040!=0 { return Ok(Vec::new()); }
+    if p.len()<24 { return Err("short Wi-Fi data header".into()); }
+    if fc&0x0400!=0 || p[22]&15!=0 { return Err("fragmented Wi-Fi data".into()); }
+    let mut offset=if fc&0x0300==0x0300 {30} else {24};
+    let mut aggregate=false;
+    if fc&0x0080!=0 {
+        if p.len()<offset+2 { return Err("short Wi-Fi QoS header".into()); }
+        aggregate=p[offset]&0x80!=0;
+        offset+=2;
+        if fc&0x8000!=0 { offset+=4; } // HT Control is present only with QoS.
+    }
+    if p.len()<offset { return Err("short Wi-Fi data header".into()); }
+    let mut body=&p[offset..];
+    let mut segments=Vec::new();
+    if !aggregate {
+        if let Some(s)=wifi_msdu(body,timestamp_ns)? { segments.push(s); }
+        return Ok(segments);
+    }
+    // A-MSDU: DA(6), SA(6), big-endian length(2), LLC payload; pad each
+    // nonfinal subframe to four bytes. Validate the whole aggregate before
+    // returning anything, so a truncated tail cannot export a partial batch.
+    for _ in 0..128 {
+        if body.len()<14 { return Err("short Wi-Fi A-MSDU header".into()); }
+        let length=u16::from_be_bytes([body[12],body[13]]) as usize;
+        let end=14+length;
+        if length<8 || end>body.len() { return Err("Wi-Fi A-MSDU length".into()); }
+        if let Some(s)=wifi_msdu(&body[14..end],timestamp_ns)? { segments.push(s); }
+        if end==body.len() { return Ok(segments); }
+        let next=(end+3)&!3;
+        if next>=body.len() { return Err("Wi-Fi A-MSDU padding/tail".into()); }
+        body=&body[next..];
+    }
+    Err("Wi-Fi A-MSDU subframe limit".into())
+}
+
+fn wifi_msdu(mut p: &[u8], timestamp_ns: u64) -> Result<Option<Segment>> {
+    // RFC1042 / bridge-tunnel LLC/SNAP. Never guess encrypted payload offsets;
+    // drivers may retain Protected on already decrypted data, so require the
+    // actual plaintext encapsulation rather than relying on that flag alone.
+    if p.len()<8 { return Err("short Wi-Fi LLC/SNAP".into()); }
+    if p[..6]!=[0xaa,0xaa,3,0,0,0] && p[..6]!=[0xaa,0xaa,3,0,0,0xf8] { return Ok(None); }
+    let mut kind=u16::from_be_bytes([p[6],p[7]]);p=&p[8..];
+    while kind==0x8100 || kind==0x88a8 {
+        if p.len()<4 { return Err("short Wi-Fi VLAN".into()); }
+        kind=u16::from_be_bytes([p[2],p[3]]);p=&p[4..];
+    }
+    if kind!=0x0800 && kind!=0x86dd { return Ok(None); }
+    tcp_packet(p,101,timestamp_ns)
+}
+
 pub fn tcp_packet(mut p: &[u8], link: u32, timestamp_ns: u64) -> Result<Option<Segment>> {
     fn be(p: &[u8], n: usize) -> u16 { u16::from_be_bytes([p[n],p[n+1]]) }
     if link == 1 {

@@ -123,11 +123,11 @@ pub fn worker(args:Vec<std::ffi::OsString>)->Result<()> {
                     let marker=(p.component,p.group,p.packet_count,p.timestamp,p.direction);
                     if !seen.insert(marker){continue;}recent.push_back(marker);if recent.len()>4096{seen.remove(&recent.pop_front().unwrap());}
                     if p.missed_read!=0 || p.missed_write!=0{send(&mut pipe,&mut sequence,5,b"packet_stream_reports")?;}
-                    let link=match p.kind{1=>1,3=>101,_=>continue};
+                    if !matches!(p.kind,1..=3){continue;}
                     let timestamp=p.timestamp.checked_sub(116444736000000000).and_then(|v|v.checked_mul(100)).ok_or("Unsupported Packet Monitor timestamp layout")?;
                     if timestamp.abs_diff(now_ns())>600_000_000_000{return Err("Unsupported Packet Monitor timestamp layout".into());}
                     if p.length as usize>p.data.len(){return Err("Invalid native packet length".into());}
-                    match capture_file::tcp_packet(&p.data[..p.length as usize],link,timestamp){Ok(Some(s))=>pending.push(s,millis),Ok(None)=>(),Err(_)=>send(&mut pipe,&mut sequence,5,b"packet_rejected")?}
+                    match capture_file::packet_monitor_tcp(&p.data[..p.length as usize],p.kind,timestamp){Ok(segments)=>{for s in segments{pending.push(s,millis);}},Err(_)=>send(&mut pipe,&mut sequence,5,b"packet_rejected")?}
                 }
             }}
             send_segments(&mut pipe,&mut sequence,epoch,pending.drain(clock.elapsed().as_millis() as u64,false))?;

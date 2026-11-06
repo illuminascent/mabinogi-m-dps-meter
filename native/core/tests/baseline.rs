@@ -331,7 +331,7 @@ fn test_file(bytes: &[u8]) -> TestFile {
 // Private fixtures stay outside the crate and are never embedded or committed.
 #[test] #[ignore = "requires private current-game profile-panel capture"]
 fn current_game_profile_action_preserves_numeric_parity_without_inventing_self() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prototypes/static-analysis");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/test-fixtures");
     let r = Replay::load(&root.join("rust-identity-profile-20261105-205033.jsonl"),None,false).unwrap();
     let s = r.meter.snapshot();
     assert_eq!(r.frames,11346);assert_eq!(s.summary.damage,7_475_691);assert_eq!(s.summary.hits,430);
@@ -343,7 +343,7 @@ fn current_game_profile_action_preserves_numeric_parity_without_inventing_self()
 
 #[test] #[ignore = "requires existing private fixture; run via scripts/test-rust.ps1 -LocalFixtures"]
 fn real_fixture_07_numeric_parity() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prototypes/static-analysis");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/test-fixtures");
     let r = Replay::load(&root.join("live-native-07.jsonl"),None,false).unwrap();let s = r.meter.snapshot();
     assert_eq!(s.summary.damage,1_592_235);assert_eq!(s.summary.hits,99);
     assert_eq!(s.summary.end.unwrap()-s.summary.start.unwrap(),9_330_202_000);
@@ -351,7 +351,7 @@ fn real_fixture_07_numeric_parity() {
 }
 #[test] #[ignore = "requires existing private entry fixture"]
 fn real_entry_numeric_parity() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prototypes/static-analysis");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/test-fixtures");
     let r = Replay::load(&root.join("ui-name-entry-02.jsonl"),None,false).unwrap();let s = r.meter.snapshot();
     assert_eq!(s.summary.damage,96_297_101);assert_eq!(s.summary.hits,5837);
     assert_eq!(s.summary.end.unwrap()-s.summary.start.unwrap(),581_169_047_500);
@@ -362,7 +362,7 @@ fn real_entry_numeric_parity() {
 
 #[test] #[ignore = "requires private current-game dummy capture from 2026-11-05"]
 fn current_game_dummy_numeric_parity() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prototypes/static-analysis");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/test-fixtures");
     let r = Replay::load(&root.join("rust-current-dummy-20261105-195023.jsonl"),None,false).unwrap();
     let s = r.meter.snapshot();
     assert_eq!(r.frames,6419);assert_eq!(s.summary.damage,3_858_781);assert_eq!(s.summary.hits,235);

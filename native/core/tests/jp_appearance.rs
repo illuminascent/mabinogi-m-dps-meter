@@ -40,7 +40,7 @@ use mabi_meter_core::{capture_file::unhex,identity::score2_layout::parse_jp_obse
 
 #[test] #[ignore="requires private saved JP appearance corpus"]
 fn structured_jp_corpus_exact_identity_full_consumption_and_truncation() {
-    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prototypes/static-analysis");
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/test-fixtures");
     let rows:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("jp-appearance-native-fixture.json")).unwrap()).unwrap();
     assert_eq!(rows.as_array().unwrap().len(),62);let mut prefixes=0;
     for row in rows.as_array().unwrap() {

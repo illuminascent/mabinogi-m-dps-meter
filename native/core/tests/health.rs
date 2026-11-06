@@ -57,7 +57,7 @@ fn key(actor:u32)->EntityKey {EntityKey {process:0,binding:1,actor,generation:1}
     assert_eq!(h.flush()[0].amount,10);
 }
 #[test] #[ignore="private packet fixture"] fn real_five_self_joins_and_inferred_damage() {
-    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prototypes/static-analysis");
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/test-fixtures");
     let mut r=Replay::new(false);let mut changes=Vec::new();let mut last=None;
     mabi_meter_core::capture_file::read(&root.join("jp-identity-research-long-five-self-joins.jsonl"),None,|input|{
         r.feed(input)?;if r.meter.registry.self_key!=last {last=r.meter.registry.self_key;if let Some(key)=last {changes.push(key.actor);}}Ok(())

@@ -106,7 +106,9 @@ capture. Meter and protocol regressions live in the Rust test suite.
 | `tests` | Python DLL wrapper and ABI tests |
 | `assets/data` | Embedded combat lookup labels; provenance is in `assets/provenance.json` |
 
-Private capture-based Rust tests are optional and remain ignored when local
-fixtures are unavailable. Public synthetic tests need no reference distribution.
+Private capture-based Rust tests use ignored files in `.local/test-fixtures`.
+Run them with `./scripts/test-rust.ps1 -LocalFixtures` (add `-UseDocker` for
+Docker). They remain ignored by default. Public synthetic tests need no
+reference distribution.
 Reference binaries, extracted UI artwork, recordings, research notes, prototype
 artifacts and compiled outputs are excluded from this repository.

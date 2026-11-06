@@ -46,9 +46,9 @@ if ($dockerBuild) {
     }
     if ($Task -eq 'Test' -and $LocalFixtures) {
         foreach ($fixture in @('live-native-07.jsonl','ui-name-entry-02.jsonl','rust-current-dummy-20261105-195023.jsonl','rust-identity-profile-20261105-205033.jsonl','jp-appearance-native-fixture.json','jp-identity-research-long-five-self-joins.jsonl','jp-identity-research-long-focused-tcp.jsonl')) {
-            $fixturePath = Join-Path $repoRoot "prototypes/static-analysis/$fixture"
+            $fixturePath = Join-Path $repoRoot ".local/test-fixtures/$fixture"
             if (-not (Test-Path -LiteralPath $fixturePath)) { throw "Missing private fixture: $fixture" }
-            $dockerArgs += @('--mount',"type=bind,source=$fixturePath,target=/repo/prototypes/static-analysis/$fixture,readonly")
+            $dockerArgs += @('--mount',"type=bind,source=$fixturePath,target=/repo/.local/test-fixtures/$fixture,readonly")
         }
     }
     $dockerArgs += @($Image,'cargo')

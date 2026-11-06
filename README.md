@@ -25,6 +25,14 @@ beside the EXE for raw game TCP records, audits, metadata, and window settings.
   and self attribution. It does not stop capture or reset packet warmup.
 - Encounters end after 15 seconds without self combat by default. The timeout
   is editable. Close the window to stop capture; a session is capped at one hour.
+- Joining an active fight pulls in retained earlier combat connected to the
+  joined actor or target: target to attackers, then attackers to other targets,
+  recursively. The encounter starts at that graph's earliest retained damage.
+  Links use full actor incarnations and the configured idle timeout; Split and
+  verified run boundaries prevent backtracking across them. Damage already
+  assigned to an archived encounter stays there. Backtracking is limited by the
+  retained history (65,536 explicit records and 65,536 HP allocations); eviction
+  of unassigned combat marks coverage partial.
 
 The **Estimated** column identifies damage inferred from target HP changes and
 attack records. These amounts are included in displayed DPS and remain separate

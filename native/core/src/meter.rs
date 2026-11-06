@@ -1,11 +1,22 @@
 use crate::{identity::{EntityKey, Registry,tracking::SelfBinding}, protocol::Damage, Result};
 use std::collections::{BTreeMap,BTreeSet,VecDeque};
+use std::sync::{Arc,OnceLock,atomic::{AtomicU64,Ordering}};
+mod live_tracks;
 
 pub const MAX_CELLS: usize = 131072;
 const MAX_RAW_HITS: usize = 65536;
 
 #[derive(Clone, Debug)]
 pub struct Hit { pub timestamp_ns: u64, pub source: EntityKey, pub target: EntityKey, pub damage: Damage }
+/// Stable membership shared with delayed skill resolution, including after a
+/// late join moves a retained hit into an encounter. Zero means session only.
+#[derive(Clone,Debug)]
+pub struct HitAssignment(Arc<HitMembership>);
+#[derive(Debug)]
+struct HitMembership { encounter:AtomicU64, skill:OnceLock<Option<u32>>, boundary:u64 }
+impl HitAssignment {
+    pub fn encounter(&self)->Option<u64> { match self.0.encounter.load(Ordering::Relaxed) {0=>None,id=>Some(id)} }
+}
 #[derive(Clone, Default, Debug)]
 pub struct Aggregate { pub damage: u128, pub hits: u64,pub allocations:u64, pub flags: [u64;5], pub start: Option<u64>, pub end: Option<u64> }
 impl Aggregate {
@@ -84,7 +95,8 @@ pub struct Meter {
     transitions: BTreeSet<u64>, pub raw_hits: VecDeque<Hit>, pub evicted_hits: u64,
     cells: usize,
     pub viewing:Option<u64>,pub inferred_hits:VecDeque<Hit>,pub idle_ns:u64,pub last_self_activity:Option<u64>,pub automatic_encounters:bool,
-    raw_encounters:VecDeque<Option<u64>>,inferred_encounters:VecDeque<Option<u64>>,target_query:String,
+    raw_encounters:VecDeque<HitAssignment>,inferred_encounters:VecDeque<HitAssignment>,target_query:String,
+    combat_boundary:u64,pending_nodes:BTreeMap<EntityKey,u64>,latest_combat_ns:u64,backtrack_floor_ns:u64,
 }
 impl Default for Meter {
     fn default() -> Self {
@@ -92,12 +104,21 @@ impl Default for Meter {
             binding: 1,revision: 0,selected: None,partial: false,last_command: 0,last_seen_command: 0,
             transitions: BTreeSet::new(),raw_hits: VecDeque::new(),evicted_hits: 0,cells: 0,
             viewing:None,inferred_hits:VecDeque::new(),idle_ns:15_000_000_000,last_self_activity:None,automatic_encounters:false,
-            raw_encounters:VecDeque::new(),inferred_encounters:VecDeque::new(),target_query:String::new() }
+            raw_encounters:VecDeque::new(),inferred_encounters:VecDeque::new(),target_query:String::new(),
+            combat_boundary:0,pending_nodes:BTreeMap::new(),latest_combat_ns:0,backtrack_floor_ns:0 }
     }
 }
 impl Meter {
     pub fn last_hit_encounter(&self,inferred:bool)->Option<u64>{
-        (if inferred{&self.inferred_encounters}else{&self.raw_encounters}).back().copied().flatten()
+        self.last_hit_assignment(inferred).and_then(|a|a.encounter())
+    }
+    pub fn last_hit_assignment(&self,inferred:bool)->Option<HitAssignment>{
+        (if inferred{&self.inferred_encounters}else{&self.raw_encounters}).back().cloned()
+    }
+    pub fn attribute_recorded_skill(&mut self,h:&Hit,assignment:&HitAssignment,skill:Option<u32>,inferred:bool)->Result<()> {
+        if assignment.0.skill.get().is_some(){return Err("hit skill already attributed".into());}
+        self.attribute_skill(h,assignment.encounter().unwrap_or(0),skill,inferred)?;
+        assignment.0.skill.set(skill).expect("single core writer");Ok(())
     }
     pub fn attribute_skill(&mut self,h:&Hit,encounter:u64,skill:Option<u32>,inferred:bool)->Result<()> {
         let key=(encounter,h.source,h.target,skill,inferred);
@@ -113,6 +134,7 @@ impl Meter {
     }
     pub fn add_estimate(&mut self,h:Hit)->Result<()> { self.add_kind(h,true) }
     fn add_kind(&mut self,h:Hit,inferred:bool)->Result<()> {
+        self.latest_combat_ns=self.latest_combat_ns.max(h.timestamp_ns);
         // Capture totals/history accept every observed source. Encounter policy
         // only controls the selected measurement, never packet eligibility.
         let (total,sources)=if inferred{(&mut self.session.estimated_total,&mut self.session.estimates)}else{(&mut self.session.total,&mut self.session.sources)};
@@ -122,21 +144,35 @@ impl Meter {
         *total=next_total;sources.insert(h.source,next_source);
         let history=if inferred { &mut self.inferred_hits } else { &mut self.raw_hits };
         let tags=if inferred{&mut self.inferred_encounters}else{&mut self.raw_encounters};
-        if history.len() == MAX_RAW_HITS { history.pop_front();tags.pop_front();self.evicted_hits += 1; }
-        history.push_back(h.clone());tags.push_back(None);self.revision+=1;
+        let assignment=HitAssignment(Arc::new(HitMembership{encounter:AtomicU64::new(0),skill:OnceLock::new(),boundary:self.combat_boundary}));
+        let evicted=if history.len() == MAX_RAW_HITS { history.pop_front();self.evicted_hits += 1;tags.pop_front() }else{None};
+        history.push_back(h.clone());tags.push_back(assignment.clone());self.revision+=1;
+        if evicted.is_some_and(|a|a.encounter().is_none() && a.0.boundary==self.combat_boundary){
+            self.partial=true;
+            if self.evicted_hits % MAX_RAW_HITS as u64==0 {self.rebuild_pending_nodes();}
+        }
         if self.automatic_encounters {
             self.tick(h.timestamp_ns);
             let own=self.registry.self_key;
             let involved=self.registry.is_self_source(h.source) || own==Some(h.target);
-            if matches!(self.encounters[&self.current].state,EncounterState::Ended|EncounterState::Idle) {
-                if own.is_some() && !involved { return Ok(()); }
+            if matches!(self.encounters[&self.current].state,EncounterState::Ended|EncounterState::Idle|EncounterState::PendingReset) {
+                if own.is_some() && !involved {
+                    for node in [h.source,h.target] {self.pending_nodes.entry(node).and_modify(|t|*t=(*t).max(h.timestamp_ns)).or_insert(h.timestamp_ns);}
+                    if self.pending_nodes.len()>MAX_RAW_HITS*4 {self.rebuild_pending_nodes();}
+                    return Ok(());
+                }
                 if self.encounters[&self.current].state==EncounterState::Ended {
+                    if let Some(v)=self.encounters[&self.current].views.get(&None) {
+                        self.backtrack_floor_ns=self.backtrack_floor_ns.max(v.total.end.unwrap_or(0).max(v.estimated_total.end.unwrap_or(0)));
+                    }
                     self.encounters.get_mut(&self.current).unwrap().state=EncounterState::PendingReset;
                 }
                 self.viewing=None;self.selected=None;self.target_query.clear();
             }
             if involved || own.is_none() { self.last_self_activity=Some(self.last_self_activity.map_or(h.timestamp_ns,|old|old.max(h.timestamp_ns))); }
-            if inferred && self.encounters[&self.current].views.get(&None).and_then(|v|v.total.start.or(v.estimated_total.start)).is_some_and(|start|h.timestamp_ns<start){return Ok(());}
+            // HP allocations can be delivered after self joins. Their capture
+            // timestamps may legitimately precede the current view's start.
+            if inferred && h.timestamp_ns<self.backtrack_floor_ns {return Ok(());}
         }
         if self.encounters[&self.current].state == EncounterState::PendingReset {
             if self.encounters.len() >= 32 { return Err("encounter archive capacity reached; export required".into()); }
@@ -145,6 +181,14 @@ impl Meter {
         if self.encounters[&self.current].state == EncounterState::Ended {
             return Err("damage after end needs a verified new-run decision".into());
         }
+        self.add_to_encounter(&h,inferred)?;
+        assignment.0.encounter.store(self.current,Ordering::Relaxed);
+        if self.automatic_encounters && [h.source,h.target].iter().any(|node|self.pending_nodes.get(node).is_some_and(|t|t.abs_diff(h.timestamp_ns)<self.idle_ns)) {
+            self.consolidate(&h)?;
+        }
+        Ok(())
+    }
+    fn add_to_encounter(&mut self,h:&Hit,inferred:bool)->Result<()> {
         let encounter = self.encounters.get_mut(&self.current).unwrap();
         let needed = [None,Some(h.target)].into_iter().filter(|k|
             !encounter.views.get(k).is_some_and(|v| if inferred {v.estimates.contains_key(&h.source)} else {v.sources.contains_key(&h.source)})).count();
@@ -168,8 +212,35 @@ impl Meter {
             else { view.total=total;view.sources.insert(h.source,source); }
         }
         self.cells += needed; encounter.state = EncounterState::Active;
-        let tags=if inferred{&mut self.inferred_encounters}else{&mut self.raw_encounters};if let Some(tag)=tags.back_mut(){*tag=Some(self.current);}
         Ok(())
+    }
+    fn rebuild_pending_nodes(&mut self) {
+        self.pending_nodes.clear();
+        for (h,a) in self.raw_hits.iter().zip(&self.raw_encounters).chain(self.inferred_hits.iter().zip(&self.inferred_encounters)) {
+            if a.encounter().is_none() && a.0.boundary==self.combat_boundary && h.timestamp_ns>=self.backtrack_floor_ns {
+                for node in [h.source,h.target]{self.pending_nodes.entry(node).and_modify(|t|*t=(*t).max(h.timestamp_ns)).or_insert(h.timestamp_ns);}
+            }
+        }
+    }
+    fn consolidate(&mut self,joining:&Hit)->Result<()> {
+        let hits=self.raw_hits.iter().zip(&self.raw_encounters).map(|(h,a)|(h,a,false))
+            .chain(self.inferred_hits.iter().zip(&self.inferred_encounters).map(|(h,a)|(h,a,true)))
+            .filter(|(h,a,_)|a.encounter().is_none() && a.0.boundary==self.combat_boundary && h.timestamp_ns>=self.backtrack_floor_ns).collect();
+        for (h,a,inferred) in live_tracks::connected(hits,joining,self.idle_ns) {
+            self.add_to_encounter(&h,inferred)?;
+            if let Some(skill)=a.0.skill.get() {
+                self.attribute_skill(&h,self.current,*skill,inferred)?;
+                let key=(0,h.source,h.target,*skill,inferred);
+                let amount=self.skills.get_mut(&key).expect("pending skill conservation");
+                *amount=amount.checked_sub(h.damage.amount as u128).expect("pending skill conservation");
+                if *amount==0{self.skills.remove(&key);}
+            }
+            a.0.encounter.store(self.current,Ordering::Relaxed);
+        }
+        self.rebuild_pending_nodes();Ok(())
+    }
+    fn partition_live_tracks(&mut self) {
+        self.combat_boundary+=1;self.pending_nodes.clear();self.backtrack_floor_ns=self.latest_combat_ns;
     }
     pub fn activity(&mut self,source:EntityKey,target:EntityKey,timestamp_ns:u64) {
         if self.encounters[&self.current].state==EncounterState::Active && (self.registry.is_self_source(source)||self.registry.self_key==Some(target)) {
@@ -197,6 +268,7 @@ impl Meter {
         if self.transitions.contains(&evidence) { return Ok(()); }
         if self.transitions.len() >= 4096 { return Err("transition evidence capacity reached".into()); }
         self.transitions.insert(evidence);
+        if reset || end || bindings { self.partition_live_tracks(); }
         if bindings { self.binding += 1; self.registry.clear_current(); }
         if character_switch { self.registry.clear_character(); }
         if reset { self.encounters.get_mut(&self.current).unwrap().state = EncounterState::PendingReset; }
@@ -257,7 +329,7 @@ impl Meter {
         let (Some(start),Some(end))=(summary.start,summary.end) else {return Vec::new();};
         let selected=self.viewing.unwrap_or(self.current);
         let mut hits:Vec<_>=self.raw_hits.iter().zip(&self.raw_encounters).chain(self.inferred_hits.iter().zip(&self.inferred_encounters))
-            .filter(|(h,tag)|**tag==Some(selected) && h.timestamp_ns>=start && h.timestamp_ns<=end && self.selected.is_none_or(|k|k==h.target)).map(|(h,_)|h).collect();
+            .filter(|(h,tag)|tag.encounter()==Some(selected) && h.timestamp_ns>=start && h.timestamp_ns<=end && self.selected.is_none_or(|k|k==h.target)).map(|(h,_)|h).collect();
         hits.sort_by_key(|h|h.timestamp_ns);
         let retained:u128=hits.iter().map(|h|h.damage.amount as u128).sum();
         let mut cumulative=summary.damage.saturating_sub(retained);let mut rolling=0u128;let mut first=0;
@@ -296,6 +368,7 @@ impl Meter {
                 Action::Reset => {
                     if self.encounters.len()>=32 {Err("encounter archive capacity reached; export required".into())}
                     else {
+                        self.partition_live_tracks();
                         self.encounters.get_mut(&self.current).unwrap().state=EncounterState::Ended;
                         self.current+=1;self.encounters.insert(self.current,Encounter::new(self.current));
                         self.viewing=None;self.selected=None;self.target_query.clear();self.last_self_activity=None;

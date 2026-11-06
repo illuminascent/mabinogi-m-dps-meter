@@ -16,7 +16,7 @@ pub struct Replay {
     pub use_clock_bounds:bool,pub evaluation_withhold_actor:Option<u32>,pub withheld:VecDeque<Hit>,pub withheld_evictions:u64,
     pub combat:combat::Combat,pub timeline:combat::Timeline,
     last_clock:BTreeMap<(u64,u32),u64>,
-    pending_skills:VecDeque<(Hit,Stamp,u64)>,
+    pending_skills:VecDeque<(Hit,Stamp,crate::meter::HitAssignment)>,
     health_identity_revision:u64,
     pub meter: Meter, pub diagnostics: Diagnostics, pub segments: u64, pub frames: u64,
     streams: BTreeMap<Flow,TcpStream>, connections: BTreeMap<[(String,u16);2],u64>,
@@ -128,7 +128,7 @@ impl Replay {
                         let hit=Hit { timestamp_ns: s.timestamp_ns,source,target,damage: d };
                         self.meter.add(hit.clone())?;
                         if self.pending_skills.len()>=8192{return Err("pending skill capacity reached".into());}
-                        self.pending_skills.push_back((hit,at,self.meter.last_hit_encounter(false).unwrap_or(0)));
+                        self.pending_skills.push_back((hit,at,self.meter.last_hit_assignment(false).expect("accepted hit")));
                     }
                     Err(_) => {
                         let p=&frame.payload;
@@ -285,12 +285,13 @@ impl Replay {
             actor:e.source.actor,target:e.target.actor,amount:e.amount,flags:[false;5],raw_flags:[0;7]
         }};
         self.meter.add_estimate(hit.clone())?;
-        self.meter.attribute_skill(&hit,self.meter.last_hit_encounter(true).unwrap_or(0),e.skill,true)?;Ok(())
+        let assignment=self.meter.last_hit_assignment(true).expect("accepted allocation");
+        self.meter.attribute_recorded_skill(&hit,&assignment,e.skill,true)?;Ok(())
     }
     fn finalize_skills(&mut self,now:Option<u64>)->Result<()> {
         while self.pending_skills.front().is_some_and(|(_,at,_)|now.is_none_or(|n|n.saturating_sub(at.timestamp_ns)>combat::EVENT_NS)){
-            let (hit,at,encounter)=self.pending_skills.pop_front().unwrap();let skill=self.combat.skill(hit.source,hit.target,at);
-            self.meter.attribute_skill(&hit,encounter,skill.skill,false)?;
+            let (hit,at,assignment)=self.pending_skills.pop_front().unwrap();let skill=self.combat.skill(hit.source,hit.target,at);
+            self.meter.attribute_recorded_skill(&hit,&assignment,skill.skill,false)?;
             self.meter.skill_evidence(at,hit.source,hit.target,skill);
         }Ok(())
     }
@@ -332,7 +333,7 @@ impl Replay {
             "assume_aligned": self.aligned,"summary": snapshot_json(&s),
             "entity_scope_policy": if self.live_scope {"verified game process epoch; transport independent"}else{"offline connection lineage; no process ownership inferred"},
             "capture_totals":{"explicit_damage":self.meter.session.total.damage.to_string(),"explicit_hits":self.meter.session.total.hits,"estimated_damage":self.meter.session.estimated_total.damage.to_string(),"estimated_allocations":self.meter.session.estimated_total.allocations},
-            "encounters":self.meter.encounters.iter().map(|(id,e)|json!({"id":id,"state":format!("{:?}",e.state),"views":e.views.iter().map(|(target,v)|json!({"target":target.map(key_json),"explicit_damage":v.total.damage.to_string(),"explicit_hits":v.total.hits,"estimated_damage":v.estimated_total.damage.to_string(),"estimated_allocations":v.estimated_total.allocations,"start_ns":v.total.start.or(v.estimated_total.start),"end_ns":v.total.end.or(v.estimated_total.end),"sources":v.sources.iter().map(|(key,a)|json!({"key":key_json(*key),"damage":a.damage.to_string(),"hits":a.hits})).collect::<Vec<_>>(),"estimates":v.estimates.iter().map(|(key,a)|json!({"key":key_json(*key),"damage":a.damage.to_string(),"allocations":a.allocations})).collect::<Vec<_>>() })).collect::<Vec<_>>() })).collect::<Vec<_>>(),
+            "encounters":self.meter.encounters.iter().map(|(id,e)|json!({"id":id,"state":format!("{:?}",e.state),"views":e.views.iter().map(|(target,v)|json!({"target":target.map(key_json),"explicit_damage":v.total.damage.to_string(),"explicit_hits":v.total.hits,"estimated_damage":v.estimated_total.damage.to_string(),"estimated_allocations":v.estimated_total.allocations,"start_ns":v.total.start.into_iter().chain(v.estimated_total.start).min(),"end_ns":v.total.end.into_iter().chain(v.estimated_total.end).max(),"sources":v.sources.iter().map(|(key,a)|json!({"key":key_json(*key),"damage":a.damage.to_string(),"hits":a.hits})).collect::<Vec<_>>(),"estimates":v.estimates.iter().map(|(key,a)|json!({"key":key_json(*key),"damage":a.damage.to_string(),"allocations":a.allocations})).collect::<Vec<_>>() })).collect::<Vec<_>>() })).collect::<Vec<_>>(),
             "raw_hits_retained": self.meter.raw_hits.len(),"raw_hits_evicted": self.meter.evicted_hits,
             "identity_evidence_retained": self.evidence.len(),
             "identity_metadata_count":self.meter.registry.profile_names.len(),

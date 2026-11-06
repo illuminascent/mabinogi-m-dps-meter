@@ -65,6 +65,27 @@ fn feed(r:&mut Replay,seq:&mut u32,wire:i32,p:Vec<u8>,time:u64){let payload=prot
     let mut a=vec![0;35];put32(&mut a,0,1);put32(&mut a,8,2);put32(&mut a,16,0xf0000001);feed(&mut r,&mut seq,20526,a,1);r.finish();
     assert_eq!(r.meter.session.total.damage,123);assert_eq!(r.meter.skills.values().sum::<u128>(),123);assert_eq!(r.meter.skills.keys().next().unwrap().3,Some(0xf0000001));assert_eq!(r.meter.raw_hits[0].damage.amount,123);
 }
+#[test] fn live_replay_late_join_routes_both_finalized_and_deferred_skills(){
+    for join_time in [10_000_000,100_000_000] {
+        let mut r=Replay::new(true);r.live_scope=true;r.meter.automatic_encounters=true;
+        let me=r.meter.registry.observe(0,1,1).unwrap();r.meter.registry.assign(Some(me)).unwrap();let mut seq=1;
+        let mut p=vec![0;53];put32(&mut p,0,3);put32(&mut p,8,2);put64(&mut p,16,123);feed(&mut r,&mut seq,21196,p.clone(),0);
+        let mut a=vec![0;35];put32(&mut a,0,3);put32(&mut a,8,2);put32(&mut a,16,0xf0000001);feed(&mut r,&mut seq,20526,a,1);
+        assert_eq!(r.meter.snapshot().summary.damage,0);
+        put32(&mut p,0,1);put64(&mut p,16,7);feed(&mut r,&mut seq,21196,p,join_time);r.finish();
+        let s=r.meter.snapshot();assert_eq!((s.summary.damage,s.summary.start),(130,Some(0)));
+        assert_eq!(r.meter.skills.values().sum::<u128>(),130);assert!(r.meter.skills.keys().all(|k|k.0==1));
+        assert_eq!(s.rows.iter().flat_map(|r|&r.skills).map(|s|s.explicit+s.estimated).sum::<u128>(),130);
+    }
+}
+#[test] fn late_join_audit_uses_earliest_estimate_and_latest_explicit_time(){
+    let mut r=Replay::new(true);r.meter.automatic_encounters=true;
+    let me=r.meter.registry.observe(1,1,1).unwrap();r.meter.registry.assign(Some(me)).unwrap();
+    let h=|source,t,amount|Hit{timestamp_ns:t,source:key(source),target:key(10),damage:Damage{actor:source,target:10,amount,flags:[false;5],raw_flags:[0;7]}};
+    r.meter.add_estimate(h(2,1,40)).unwrap();r.meter.add(h(1,2,10)).unwrap();
+    let audit=r.audit();let view=audit["encounters"][0]["views"].as_array().unwrap().iter().find(|v|v["target"].is_null()).unwrap();
+    assert_eq!(view["start_ns"],1);assert_eq!(view["end_ns"],2);assert_eq!(r.meter.snapshot().summary.damage,50);
+}
 #[test] fn unknown_npc_template_is_accepted_only_by_fixed_suffix_profile(){
     let mut body=vec![0;700];put64(&mut body,0,12);put64(&mut body,572,12);put32(&mut body,580,2048);
     put64(&mut body,590,u64::MAX);put32(&mut body,598,3);put32(&mut body,602,0xf0000001);

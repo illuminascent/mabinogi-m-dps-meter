@@ -52,6 +52,7 @@ struct Vote { count: u8, last: Evidence, kinds: BTreeSet<u8> }
 
 #[derive(Debug)]
 pub struct Tracking {
+    current_index:IdentityIndex,retired_index:IdentityIndex,processes:BTreeSet<u64>,
     pub revision: u64,
     pub personal: Option<Character>, pub personal_source: Option<Evidence>,
     pub appearances: BTreeMap<EntityKey, SeenAppearance>,
@@ -66,7 +67,7 @@ pub struct Tracking {
 impl Default for Tracking { fn default() -> Self { Self::new(Limits::default()) } }
 impl Tracking {
     pub fn new(limits: Limits) -> Self {
-        Self { revision: 0,personal: None,personal_source: None,appearances: BTreeMap::new(),
+        Self { current_index:IdentityIndex::default(),retired_index:IdentityIndex::default(),processes:BTreeSet::new(),revision: 0,personal: None,personal_source: None,appearances: BTreeMap::new(),
             aliases: BTreeMap::new(),events: VecDeque::new(),event_evictions: 0,
             automatic: SelfBinding::default(),operator: None,votes: BTreeMap::new(),
             vote_frames: BTreeMap::new(),groups: BTreeMap::new(),limits,wire_context:None,appearance_contexts:BTreeMap::new() }
@@ -130,24 +131,32 @@ impl Tracking {
             c.code_server = c.code_server.or(old.character.code_server);
             c.name_server = c.name_server.or_else(|| old.character.name_server.clone());
         }
-        self.appearances.insert(key,SeenAppearance { character:c,source,current:true });
+        if let Some(old)=self.appearances.get(&key){
+            if old.current{self.current_index.remove(key,&old.character);}else{self.retired_index.remove(key,&old.character);}
+        }
+        self.current_index.insert(key,&c);self.processes.insert(key.process);
+        self.appearances.insert(key,SeenAppearance { character:c.clone(),source,current:true });
         self.event("verified_appearance",Some(key),Some(source));
-        self.refresh_aliases()?; self.reconcile(); Ok(())
+        self.refresh_aliases(&c,key.process)?; self.reconcile(); Ok(())
     }
     pub fn wire_appearance(&mut self,key:EntityKey,c:Character,source:Evidence,context:(u64,u64))->Result<()> {
+        self.appearance_context(key,context)?;self.appearance(key,c,source)
+    }
+    pub fn appearance_context(&mut self,key:EntityKey,context:(u64,u64))->Result<()> {
         if !self.appearance_contexts.contains_key(&key) && self.appearance_contexts.len()>=self.limits.appearances{return Err("Appearance context capacity reached".into());}
-        self.appearance_contexts.insert(key,context);self.appearance(key,c,source)
+        self.appearance_contexts.insert(key,context);Ok(())
     }
     /// A verified retirement is different from a capture gap. Gaps must not call this.
     pub fn retire(&mut self, key: EntityKey, source: Evidence) -> Result<()> {
-        if let Some(a) = self.appearances.get_mut(&key) { a.current = false; }
+        let changed=self.appearances.get(&key).map(|a|a.character.clone());
+        if let Some(a) = self.appearances.get_mut(&key) {self.current_index.remove(key,&a.character);self.retired_index.insert(key,&a.character);a.current = false; }
         self.votes.remove(&key);
         if self.operator.is_some_and(|(k,_)| k == key) { self.operator = None; }
         if self.automatic.key == Some(key) { self.automatic = SelfBinding::default(); }
-        self.event("binding_retired",Some(key),Some(source)); self.refresh_aliases()?; self.reconcile(); Ok(())
+        self.event("binding_retired",Some(key),Some(source)); if let Some(c)=changed{self.refresh_aliases(&c,key.process)?;} self.reconcile(); Ok(())
     }
     pub fn clear_bindings(&mut self, source: Evidence) {
-        for a in self.appearances.values_mut() { a.current = false; }
+        for (key,a) in self.appearances.iter_mut().filter(|(_,a)|a.current) {self.current_index.remove(*key,&a.character);self.retired_index.insert(*key,&a.character);a.current = false; }
         self.automatic = SelfBinding::default(); self.operator = None;
         self.votes.clear(); self.vote_frames.clear();
         self.event("bindings_invalidated_character_retained",None,Some(source));
@@ -189,8 +198,8 @@ impl Tracking {
         self.event("verified_self_vote",Some(key),Some(source)); self.reconcile(); Ok(())
     }
     fn reconcile(&mut self) {
-        let matches: Vec<_> = self.personal.as_ref().map_or_else(Vec::new,|c| self.appearances.iter()
-            .filter(|(k,a)| a.current && self.wire_context.is_none_or(|scope|scope==self.appearance_contexts.get(k).copied().unwrap_or((k.process,k.binding))) && c.matches(&a.character)).map(|(k,_)| *k).collect());
+        let matches: Vec<_> = self.personal.as_ref().map_or_else(Vec::new,|c|self.processes.iter().flat_map(|process|self.current_index.matching(c,*process))
+            .filter(|k|self.wire_context.is_none_or(|scope|scope==self.appearance_contexts.get(k).copied().unwrap_or((k.process,k.binding))) && c.matches(&self.appearances[k].character)).collect::<BTreeSet<_>>().into_iter().collect());
         if matches.len() == 1 {
             self.votes.clear(); self.vote_frames.clear();
             let key = matches[0];
@@ -219,13 +228,15 @@ impl Tracking {
             self.automatic = SelfBinding { key,evidence,primary_locked:false,voter_locked:key.is_some(),candidates,source };
         }
     }
-    fn refresh_aliases(&mut self) -> Result<()> {
+    fn refresh_aliases(&mut self,changed:&Character,process:u64) -> Result<()> {
         // ID replacement requires matching persistent identity AND retirement.
         // Two simultaneous matching actors remain ambiguous; newest is no tie-break.
-        let current_index = IdentityIndex::new(self.appearances.iter().filter(|(_,a)| a.current));
-        let retired_index = IdentityIndex::new(self.appearances.iter().filter(|(_,a)| !a.current));
+        let current_index = &self.current_index;
+        let retired_index = &self.retired_index;
         let mut additions = Vec::new();
-        for (new,a) in self.appearances.iter().filter(|(_,a)| a.current) {
+        let affected=current_index.neighbors(changed,process);
+        for new in &affected {
+            let a=&self.appearances[new];
             if current_index.matching(&a.character,new.process).take(2).count() != 1 { continue; }
             for old in retired_index.matching(&a.character,new.process) {
                 let b = &self.appearances[&old];
@@ -254,7 +265,9 @@ impl Tracking {
         }
         let mut uid_sets:BTreeMap<EntityKey,BTreeSet<u64>>=BTreeMap::new();
         let mut code_sets:BTreeMap<EntityKey,BTreeSet<([u8;4],u16)>>=BTreeMap::new();
-        for (key,a) in &self.appearances {
+        let members:BTreeSet<_>=self.aliases.values().flat_map(|a|[a.old,a.new]).collect();
+        for key in &members {
+            let a=&self.appearances[key];
             let root=Self::root(&proposed,*key);
             if let Some(uid)=a.character.uid { uid_sets.entry(root).or_default().insert(uid); }
             if let Some(code)=a.character.code_server { code_sets.entry(root).or_default().insert(code); }
@@ -289,29 +302,37 @@ impl Tracking {
 
 /// Each fallback index excludes records that carry a stronger comparable key.
 /// Code/server and display-name/server are never interchangeable.
+#[derive(Default,Debug)]
 struct IdentityIndex {
-    uids: BTreeMap<(u64,u64),Vec<EntityKey>>,
-    codes: BTreeMap<(u64,bool,[u8;4],u16),Vec<EntityKey>>,
-    names: BTreeMap<(u64,bool,bool,String,u16),Vec<EntityKey>>,
+    uids: BTreeMap<(u64,u64),BTreeSet<EntityKey>>,
+    codes: BTreeMap<(u64,bool,[u8;4],u16),BTreeSet<EntityKey>>,
+    names: BTreeMap<(u64,bool,bool,String,u16),BTreeSet<EntityKey>>,
 }
 impl IdentityIndex {
-    fn new<'a>(records: impl Iterator<Item=(&'a EntityKey,&'a SeenAppearance)>) -> Self {
-        let mut index = Self { uids:BTreeMap::new(),codes:BTreeMap::new(),names:BTreeMap::new() };
-        for (key,a) in records {
-            if let Some(uid) = a.character.uid { index.uids.entry((key.process,uid)).or_default().push(*key); }
-            if let Some((code,server)) = a.character.code_server {
-                index.codes.entry((key.process,false,code,server)).or_default().push(*key);
-                if a.character.uid.is_none() { index.codes.entry((key.process,true,code,server)).or_default().push(*key); }
+    fn insert(&mut self,key:EntityKey,c:&Character){
+            if let Some(uid) = c.uid { self.uids.entry((key.process,uid)).or_default().insert(key); }
+            if let Some((code,server)) = c.code_server {
+                self.codes.entry((key.process,false,code,server)).or_default().insert(key);
+                if c.uid.is_none() { self.codes.entry((key.process,true,code,server)).or_default().insert(key); }
             }
-            if let Some((name,server)) = &a.character.name_server {
+            if let Some((name,server)) = &c.name_server {
                 for omit_uid in [false,true] { for omit_code in [false,true] {
-                    if (!omit_uid || a.character.uid.is_none()) && (!omit_code || a.character.code_server.is_none()) {
-                        index.names.entry((key.process,omit_uid,omit_code,name.clone(),*server)).or_default().push(*key);
+                    if (!omit_uid || c.uid.is_none()) && (!omit_code || c.code_server.is_none()) {
+                        self.names.entry((key.process,omit_uid,omit_code,name.clone(),*server)).or_default().insert(key);
                     }
                 }}
             }
-        }
-        index
+    }
+    fn remove(&mut self,key:EntityKey,c:&Character){
+        if let Some(uid)=c.uid{if let Some(set)=self.uids.get_mut(&(key.process,uid)){set.remove(&key);}}
+        if let Some((code,server))=c.code_server{for omit in [false,true]{if let Some(set)=self.codes.get_mut(&(key.process,omit,code,server)){set.remove(&key);}}}
+        if let Some((name,server))=&c.name_server{for omit_uid in [false,true]{for omit_code in [false,true]{if let Some(set)=self.names.get_mut(&(key.process,omit_uid,omit_code,name.clone(),*server)){set.remove(&key);}}}}
+    }
+    fn neighbors(&self,c:&Character,process:u64)->BTreeSet<EntityKey>{
+        let uid=c.uid.and_then(|uid|self.uids.get(&(process,uid)));
+        let code=c.code_server.and_then(|(code,server)|self.codes.get(&(process,false,code,server)));
+        let name=c.name_server.as_ref().and_then(|(name,server)|self.names.get(&(process,false,false,name.clone(),*server)));
+        uid.into_iter().flatten().chain(code.into_iter().flatten()).chain(name.into_iter().flatten()).copied().collect()
     }
     fn matching<'a>(&'a self, c: &Character, process: u64) -> impl Iterator<Item=EntityKey> + 'a {
         let uid = c.uid.and_then(|uid| self.uids.get(&(process,uid)));

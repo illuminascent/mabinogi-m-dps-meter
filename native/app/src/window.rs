@@ -316,8 +316,22 @@ unsafe extern "system" fn procedure(h:Handle,message:u32,w:usize,l:isize)->isize
             InvalidateRect(h,null(),0);0},
         0x20a=>{let mut pt=Point::default();GetCursorPos(&mut pt);ScreenToClient(h,&mut pt);if pt.x<s.px(208){let delta=(w>>16) as i16;let max=s.visible_targets().len().saturating_sub(2);s.target_scroll=if delta<0{(s.target_scroll+3).min(max)}else{s.target_scroll.saturating_sub(3)};InvalidateRect(h,null(),0);}0},
         0x7b=>{let mut pt=Point::default();GetCursorPos(&mut pt);let screen=pt;ScreenToClient(h,&mut pt);let mut r=Rect::default();GetClientRect(h,&mut r);let row=(pt.y-s.px(164))/s.row_height(r.bottom);
-            let key=if pt.x>=s.px(224)&&pt.y>=s.px(164)&&pt.y<r.bottom-s.px(138){s.snapshot.as_ref().and_then(|v|v.rows.get(row as usize)).and_then(|v|v.assignment_key)}else{None};
-            if let Some(key)=key{let menu=CreatePopupMenu();AppendMenuW(menu,0,1,wide("Mark as me").as_ptr());AppendMenuW(menu,0,2,wide("Clear my marker").as_ptr());let command=TrackPopupMenu(menu,0x102,screen.x,screen.y,0,h,null());DestroyMenu(menu);if command==1{s.send(Action::AssignSelf(Some(key)));}if command==2{s.send(Action::AssignSelf(None));}InvalidateRect(h,null(),0);}0},
+            let detail=if pt.x>=s.px(224)&&pt.y>=s.px(164)&&pt.y<r.bottom-s.px(138){s.snapshot.as_ref().and_then(|v|v.rows.get(row as usize)).cloned()}else{None};
+            if let Some(detail)=detail{
+                let menu=CreatePopupMenu();let key=detail.assignment_key;
+                AppendMenuW(menu,if key.is_some(){0}else{1},1,wide("Mark as me").as_ptr());AppendMenuW(menu,0,2,wide("Clear my marker").as_ptr());
+                AppendMenuW(menu,0x800,0,null());
+                AppendMenuW(menu,1,0,wide(&format!("Pet contribution: {}",number(detail.pet_damage))).as_ptr());
+                let skills=CreatePopupMenu();
+                AppendMenuW(skills,1,0,wide("Skill   |   Explicit   |   Estimated").as_ptr());
+                for skill in detail.skills.iter().take(64){
+                    AppendMenuW(skills,1,0,wide(&format!("{}   |   {}   |   {}",skill.label.replace('&',"&&"),number(skill.explicit),number(skill.estimated))).as_ptr());
+                }
+                if detail.skills.len()>64{AppendMenuW(skills,1,0,wide(&format!("{} further skills in audit",detail.skills.len()-64)).as_ptr());}
+                AppendMenuW(menu,0x10,skills as usize,wide("Skill breakdown").as_ptr());
+                let command=TrackPopupMenu(menu,0x102,screen.x,screen.y,0,h,null());DestroyMenu(menu);
+                if command==1{if let Some(key)=key{s.send(Action::AssignSelf(Some(key)));}}if command==2{s.send(Action::AssignSelf(None));}InvalidateRect(h,null(),0);
+            }0},
         0x10=>{save_window(h);DestroyWindow(h);0},2=>{KillTimer(h,1);PostQuitMessage(0);0},_=>DefWindowProcW(h,message,w,l)
     }
 }

@@ -140,6 +140,115 @@ pub fn worker(args:Vec<std::ffi::OsString>)->Result<()> {
     if let Err(e)=&outcome{let _=send(&mut pipe,&mut sequence,7,e.as_bytes());}outcome
 }
 fn platform_flows(flows:&[mabi_meter_core::transport::Flow])->Result<Vec<mabi_capture::Flow>> {if flows.is_empty(){Ok(Vec::new())}else{native_flows(flows)}}
+/// Small JSON control surface for the optional Python research UI. This owns
+/// storage only: semantic decoder failures cannot interrupt evidence capture.
+pub fn research_controller(output:Option<PathBuf>)->Result<()> {
+    use crate::research::Recorder;
+    use serde_json::{json,Value};
+    use std::io::{BufRead,Read};
+    let emit=|value:Value|->Result<()> {
+        let stdout=std::io::stdout();let mut out=stdout.lock();
+        serde_json::to_writer(&mut out,&value).map_err(|e|e.to_string())?;
+        out.write_all(b"\n").and_then(|_|out.flush()).map_err(|e|e.to_string())
+    };
+    let base=output.unwrap_or(data_dir()?.join("research"));
+    std::fs::create_dir_all(&base).map_err(|e|e.to_string())?;
+    let path=base.join(format!("session-{}-{}",now_ns(),hex(&random()?[..4])));
+    let mut recorder=Recorder::new(&path,now_ns())?;
+    // Keep stdin work bounded and off the capture/storage thread. EOF requests
+    // graceful stop; a vanished GUI cannot leave an orphan capture session.
+    let (tx,commands)=std::sync::mpsc::sync_channel::<std::result::Result<Value,String>>(16);
+    std::thread::spawn(move || {
+        let stdin=std::io::stdin();let mut input=stdin.lock();
+        loop {
+            let mut bytes=Vec::new();
+            match (&mut input).take(16*1024+1).read_until(b'\n',&mut bytes) {
+                Ok(0)=>break,
+                Ok(_) if bytes.len()>16*1024=>{let _=tx.send(Err("Research command exceeds 16 KiB".into()));break;},
+                Ok(_)=>if tx.send(serde_json::from_slice(&bytes).map_err(|e|e.to_string())).is_err(){break;},
+                Err(e)=>{let _=tx.send(Err(e.to_string()));break;},
+            }
+        }
+    });
+    let mut terminal=false;let mut ended_ns=None;
+    let outcome=(||->Result<()>{
+        emit(recorder.status("Waiting for administrator approval"))?;
+        let (mut pipe,worker_handle)=server(3600)?;
+        let mut expected=2;let mut epoch=0;let mut stopping=false;
+        let mut status="Waiting for game traffic".to_string();
+        let mut published=Instant::now()-Duration::from_secs(1);let start=Instant::now();
+        loop {
+            for _ in 0..16 {
+                let command=match commands.try_recv() {
+                    Ok(Ok(value))=>value,
+                    Ok(Err(e))=>{emit(json!({"type":"rejected","error":e}))?;continue;},
+                    Err(TryRecvError::Empty)=>break,
+                    Err(TryRecvError::Disconnected) if !stopping=>json!({"action":"stop"}),
+                    Err(TryRecvError::Disconnected)=>break,
+                };
+                if stopping {emit(json!({"type":"rejected","error":"Capture is stopping"}))?;continue;}
+                let observed=now_ns();
+                match recorder.command(&command,observed) {
+                    Ok(())=>{
+                        if command["action"]=="stop" {
+                            ended_ns=Some(observed);pipe.send(&wire::envelope(2,8,&[])?)?;
+                            stopping=true;status="Stopping; draining capture".into();
+                        }
+                        emit(json!({"type":"ack","action":command["action"],"observed_ns":observed}))?;
+                        emit(recorder.status(&status))?;
+                    },
+                    Err(e)=>emit(json!({"type":"rejected","error":e}))?,
+                }
+            }
+            let mut received=false;
+            for _ in 0..64 {
+                let Some(message)=pipe.recv()? else{break;};received=true;
+                let (kind,data)=wire::header(&message,&mut expected)?;
+                match kind {
+                    2=>{
+                        let value:Value=serde_json::from_slice(data).map_err(|e|e.to_string())?;
+                        let next=value["epoch"].as_u64().ok_or("Missing ownership epoch")?;
+                        if next<=epoch{return Err("Non-increasing ownership epoch".into());}epoch=next;
+                        recorder.event(json!({"type":"ownership","observed_ns":now_ns(),"data":value}))?;
+                    },
+                    3=>{
+                        let (batch_epoch,segments)=wire::decode_segments(data)?;
+                        if batch_epoch!=epoch{return Err("Packet ownership epoch mismatch".into());}
+                        for s in segments {recorder.segment(epoch,&s)?;}
+                    },
+                    4=>{
+                        status=String::from_utf8(data.to_vec()).map_err(|e|e.to_string())?;
+                        recorder.event(json!({"type":"capture_status","observed_ns":now_ns(),"status":status}))?;
+                    },
+                    5=>recorder.loss(&String::from_utf8_lossy(data),now_ns())?,
+                    6=>{
+                        if data.len()!=8{return Err("Invalid capture completion report".into());}
+                        recorder.event(json!({"type":"ownership_summary","unowned_segments_discarded":u64::from_le_bytes(data.try_into().unwrap())}))?;
+                        terminal=true;break;
+                    },
+                    7=>return Err(String::from_utf8_lossy(data).into_owned()),
+                    _=>return Err("Unsupported capture message".into()),
+                }
+            }
+            if terminal {break;}
+            if published.elapsed()>=Duration::from_millis(500) {
+                recorder.flush()?;emit(recorder.status(&status))?;published=Instant::now();
+            }
+            if unsafe{WaitForSingleObject(worker_handle.0,0)}==0 && !received {
+                return Err("Capture worker exited without final acknowledgement".into());
+            }
+            if start.elapsed()>Duration::from_secs(3700){return Err("Research capture deadline exceeded".into());}
+            sleep();
+        }
+        Ok(())
+    })();
+    // Pipe drop disconnects only our worker, including on storage/stdout failure.
+    let saved=recorder.finish(ended_ns.unwrap_or_else(now_ns),terminal,outcome.as_ref().err().map(String::as_str));
+    let result=outcome.and(saved);
+    let _=emit(json!({"type":"finished","completed":terminal && result.is_ok(),
+        "error":result.as_ref().err(),"summary":recorder.status("Capture stopped; files saved")}));
+    result
+}
 pub fn controller(commands:Receiver<Command>,acks:SyncSender<Ack>,updates:Updates,seconds:u64,wait_after:bool)->Result<()> {
     let mut replay=Replay::new(false);replay.live_scope=true;replay.meter.automatic_encounters=true;
     let directory=data_dir()?;std::fs::create_dir_all(&directory).map_err(|e|e.to_string())?;

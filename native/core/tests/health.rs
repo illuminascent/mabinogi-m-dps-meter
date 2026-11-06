@@ -1,13 +1,19 @@
 use mabi_meter_core::{health::Health,identity::EntityKey,replay::Replay,meter::{Meter,Hit,Action,Command},protocol::Damage};
+use mabi_meter_core::combat::{Stamp,Attack};
 fn key(actor:u32)->EntityKey {EntityKey {process:0,binding:1,actor,generation:1}}
-#[test] fn inference_suppresses_explicit_ambiguity_heals_and_loss() {
-    let (source,target)=(key(1),key(2));let mut h=Health::default();
-    h.update(target,1000,0).unwrap();h.update(target,900,1).unwrap();h.attack(source,target);
-    assert_eq!(h.update(target,800,2).unwrap().unwrap().amount,100);
-    h.attack(source,target);h.explicit(target);assert!(h.update(target,700,3).unwrap().is_none());
-    h.attack(source,target);h.attack(source,target);assert!(h.update(target,600,4).unwrap().is_none());
-    h.attack(source,target);assert!(h.update(target,1000,5).unwrap().is_none());
-    h.update(target,900,6).unwrap();h.attack(source,target);h.clear();assert!(h.flush().is_empty());
+fn at(frame:u64)->Stamp{Stamp{process:1,continuity:0,context:1,frame,order:frame,timestamp_ns:frame*1_000_000,tcp_byte:frame*60}}
+fn attack(source:EntityKey,target:EntityKey,frame:u64)->Attack{Attack{source,target,key1:7000001,key2:0,meta:[0;8],at:at(frame)}}
+fn health()->Health{let mut h=Health::default();h.self_sources(true,[key(99)].into());h}
+#[test] fn accounting_keeps_explicit_residual_multihits_and_loss_before_heal() {
+    let (source,target)=(key(1),key(2));let mut h=health();
+    h.update(target,1000,at(0)).unwrap();h.update(target,900,at(1)).unwrap();h.attack(attack(source,target,2)).unwrap();
+    assert!(h.update(target,800,at(3)).unwrap().is_empty());
+    h.attack(attack(key(99),target,4)).unwrap();h.explicit(key(99),target,30,at(5)).unwrap();
+    h.attack(attack(source,target,6)).unwrap();h.attack(attack(source,target,7)).unwrap();
+    h.update(target,1000,at(8)).unwrap();let estimates=h.flush();assert_eq!(estimates.len(),2);assert_eq!(estimates[0].amount,100);assert_eq!(estimates[1].amount,70);
+    assert_eq!((h.loss,h.explicit,h.allocated,h.unassigned),(200,30,170,0));
+    h.update(target,1000,at(9)).unwrap();h.update(target,900,at(10)).unwrap();h.attack(attack(source,target,11)).unwrap();h.clear();assert!(h.flush().is_empty());
+    assert_eq!(h.unassigned,100);assert_eq!(h.audit.back().unwrap().reason,"continuity invalidated");
 }
 #[test] fn encounters_history_and_new_battle_navigation() {
     let mut m=Meter::default();m.automatic_encounters=true;let source=m.registry.observe(0,1,1).unwrap();let target=m.registry.observe(0,1,2).unwrap();m.registry.assign(Some(source)).unwrap();
@@ -51,10 +57,56 @@ fn key(actor:u32)->EntityKey {EntityKey {process:0,binding:1,actor,generation:1}
     assert!(ack.applied);assert_eq!(ack.snapshot.targets.len(),1);assert_eq!(ack.snapshot.targets[0].0.actor,302);
 }
 #[test] fn hp_observations_never_cross_connection_contexts() {
-    let mut h=Health::default();let (source,target)=(key(1),key(2));
-    h.update_in(1,target,100,0).unwrap();h.update_in(1,target,90,1).unwrap();h.attack_in(2,source,target);
-    assert!(h.update_in(1,target,80,2).unwrap().is_none());h.attack_in(1,source,target);h.clear_context(2);
+    let mut h=health();let (source,target)=(key(1),key(2));
+    h.update(target,100,at(0)).unwrap();h.update(target,90,at(1)).unwrap();let mut a=attack(source,target,2);a.at.context=2;h.attack(a).unwrap();
+    assert!(h.update(target,80,at(3)).unwrap().is_empty());h.attack(attack(source,target,4)).unwrap();h.clear_context(2);
     assert_eq!(h.flush()[0].amount,10);
+}
+#[test] fn equal_sharing_is_distinct_exact_rotating_and_unknown_skill(){
+    let mut h=health();let t=key(10);h.update(t,100,at(0)).unwrap();
+    let mut totals=[0,0,0];
+    for round in 0..3{
+        let f=round*5+1;h.update(t,100-(round+1)*4,at(f)).unwrap();
+        for (i,a) in [1,1,2,3].into_iter().enumerate(){h.attack(attack(key(a),t,f+1+i as u64)).unwrap();}
+        h.update(t,100-(round+1)*4,at(f+5)).unwrap();
+    }
+    let estimates=h.flush();assert_eq!(estimates.len(),9);for e in estimates{assert_eq!(e.skill,None);totals[(e.source.actor-1) as usize]+=e.amount;}
+    assert_eq!(totals,[4,4,4]);assert_eq!(h.unassigned,0);
+}
+#[test] fn immediate_window_self_exclusion_missing_baseline_zero_and_overkill(){
+    let t=key(10);let mut h=health();h.attack(attack(key(1),t,0)).unwrap();h.update(t,100,at(1)).unwrap();
+    h.update(t,90,at(2)).unwrap();h.attack(attack(key(1),t,11)).unwrap();assert!(h.flush().is_empty());assert_eq!(h.unassigned,10);
+    h.update(t,90,at(12)).unwrap();h.update(t,80,at(13)).unwrap();h.attack(attack(key(99),t,14)).unwrap();h.attack(attack(key(1),t,15)).unwrap();assert!(h.flush().is_empty());
+    h.update(t,10,at(16)).unwrap();h.update(t,0,at(17)).unwrap();h.explicit(key(99),t,15,at(18)).unwrap();assert!(h.flush().is_empty());
+    assert!(h.audit.back().unwrap().explicit_mismatch);assert_eq!(h.loss,h.explicit+h.allocated+h.unassigned);
+}
+#[test] fn allocations_do_not_create_hits_or_criticals(){
+    let mut m=Meter::default();let source=m.registry.observe(0,1,1).unwrap();let target=m.registry.observe(0,1,2).unwrap();
+    m.add_estimate(Hit{timestamp_ns:1,source,target,damage:Damage{actor:1,target:2,amount:7,flags:[false;5],raw_flags:[0;7]}}).unwrap();
+    let s=m.snapshot();assert_eq!((s.summary.damage,s.summary.hits,s.summary.allocations),(7,0,1));assert_eq!(s.rows[0].explicit_hits,0);
+}
+#[test] fn delayed_explicit_refines_one_interval_without_extending_attack_activity(){
+    let mut h=health();let t=key(10);h.update(t,100,at(0)).unwrap();h.update(t,90,at(1)).unwrap();
+    h.attack(attack(key(1),t,2)).unwrap();h.attack(attack(key(2),t,3)).unwrap();
+    h.update(t,80,at(4)).unwrap();h.attack(attack(key(3),t,5)).unwrap();
+    h.explicit(key(1),t,4,at(40)).unwrap();
+    // Delivery waiting never makes this stale attacker eligible.
+    h.attack(attack(key(4),t,41)).unwrap();
+    let estimates=h.tick(300_000_000);assert_eq!(estimates.len(),2);
+    assert_eq!((estimates[0].source,estimates[0].amount),(key(2),6));assert_eq!((estimates[1].source,estimates[1].amount),(key(3),10));
+    assert_eq!((h.loss,h.explicit,h.allocated,h.unassigned),(20,4,16,0));assert!(h.tick(400_000_000).is_empty());
+    assert_eq!(h.refinements.len(),1);assert_eq!(h.refinements[0].amount,4);
+}
+#[test] fn sentinel_amount_cannot_establish_self_exclusion_or_suppress_explicit_hits(){
+    let mut h=health();let t=key(10);h.update(t,100,at(0)).unwrap();h.update(t,90,at(1)).unwrap();h.attack(attack(key(1),t,2)).unwrap();
+    h.sentinel(t,at(3));assert!(h.flush().is_empty());assert_eq!(h.unassigned,10);assert_eq!(h.outcomes["sentinel or out-of-range amount"],1);
+}
+#[test] fn later_hp_observation_closes_candidate_activity_during_delivery_wait(){
+    for next_hp in [90,100]{
+        let mut h=health();let t=key(10);h.update(t,100,at(0)).unwrap();h.update(t,90,at(1)).unwrap();
+        h.update(t,next_hp,at(2)).unwrap();h.attack(attack(key(1),t,3)).unwrap();
+        assert!(h.flush().is_empty());assert_eq!(h.unassigned,10);
+    }
 }
 #[test] #[ignore="private packet fixture"] fn real_five_self_joins_and_inferred_damage() {
     let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/test-fixtures");

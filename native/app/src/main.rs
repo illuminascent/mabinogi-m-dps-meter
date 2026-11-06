@@ -2,6 +2,7 @@
 use mabi_meter_core::{replay::{self,Replay}, Result};
 use std::path::PathBuf;
 mod wire;
+mod research;
 #[cfg(windows)] mod platform;
 #[cfg(windows)] mod live;
 
@@ -17,6 +18,15 @@ pub fn load(source: Source) -> Result<Replay> {
 fn run() -> Result<i32> {
     let mut args = std::env::args_os().skip(1);
     let mode = args.next().unwrap_or_else(|| "ui".into());
+    if mode == "research" {
+        let mut directory = None;
+        while let Some(arg) = args.next() {
+            if arg != "--output" || directory.is_some() { return Err("research accepts --output DIRECTORY".into()); }
+            directory = Some(PathBuf::from(args.next().ok_or("--output requires DIRECTORY")?));
+        }
+        #[cfg(windows)] { live::research_controller(directory)?; return Ok(0); }
+        #[cfg(not(windows))] { let _ = directory; return Err("Research capture requires Windows".into()); }
+    }
     if mode == "--capture-worker" {
         #[cfg(windows)] {live::worker(args.collect())?;return Ok(0);}
         #[cfg(not(windows))] {return Err("Capture requires Windows".into());}
@@ -44,6 +54,7 @@ fn run() -> Result<i32> {
                   mabi-meter replay FILE [--port N] [--assume-aligned] [--audit FILE]\n\
                   mabi-meter demo\n\
                   mabi-meter --check-system\n\
+                  mabi-meter research [--output DIRECTORY] (JSON commands on stdin)\n\
                   UI starts live capture with administrator approval. Replay needs no elevation.");
         return Ok(0);
     }

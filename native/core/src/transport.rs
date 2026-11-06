@@ -20,7 +20,7 @@ pub struct Segment {
 pub fn distance(seq: u32, expected: u32) -> i64 { seq.wrapping_sub(expected) as i32 as i64 }
 
 #[derive(Default)]
-pub struct Framer { pub buffer: Vec<u8>, pub aligned: bool }
+pub struct Framer { pub buffer: Vec<u8>, pub aligned: bool,pub consumed:u64 }
 impl Framer {
     pub fn feed(&mut self, data: &[u8], diag: &mut Diagnostics) -> Result<Vec<Frame>> {
         if self.buffer.len()+data.len() > MAX_BUFFER { return Err("framing capacity reached".into()); }
@@ -55,13 +55,14 @@ impl Framer {
             }
             if p.len() < header+len { break; }
             if candidate.is_some() { diag.report("identity_alignment"); }
-            let f = match candidate { Some(v) => v, None => protocol::read_frame(p)?.unwrap() };
+            let mut f = match candidate { Some(v) => v, None => protocol::read_frame(p)?.unwrap() };
+            f.stream_byte=self.consumed+offset as u64;
             decoded_bytes += f.payload.len();
             if decoded_bytes > protocol::MAX_DECODED { return Err("decoded delivery capacity reached".into()); }
             if !f.decoded { diag.report("frame_rejected"); }
             self.aligned = true; offset += f.consumed; frames.push(f);
         }
-        self.buffer.drain(..offset);
+        self.buffer.drain(..offset);self.consumed+=offset as u64;
         if skipped { diag.report("unaligned_bytes"); }
         Ok(frames)
     }
@@ -74,7 +75,7 @@ pub struct TcpStream {
 }
 impl TcpStream {
     pub fn new(aligned: bool) -> Self {
-        Self { framer: Framer { buffer: Vec::new(), aligned }, expected: None, syn_seq: None,
+        Self { framer: Framer { buffer: Vec::new(), aligned,consumed:0 }, expected: None, syn_seq: None,
             fin_seq: None, pending: Vec::new(), gap_since: None, closed: false }
     }
     pub fn buffered(&self) -> usize {

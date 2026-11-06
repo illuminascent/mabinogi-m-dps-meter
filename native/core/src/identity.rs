@@ -1,9 +1,10 @@
 //! Verified JP name adapters and a wire-independent reconciliation model.
 use crate::{protocol::{u32le, u64le}, Result};
-use std::{collections::BTreeMap, sync::OnceLock};
+use std::{collections::{BTreeMap,BTreeSet}, sync::OnceLock};
 pub mod tracking;
 pub mod score2_layout;
 pub mod cache;
+pub mod ownership;
 use tracking::{Evidence,EvidenceOrigin,SelfBinding,Tracking,VoteKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -93,6 +94,14 @@ pub fn player(p: &[u8]) -> Option<Appearance> {
 }
 pub fn npc(p: &[u8]) -> Option<Appearance> {
     if p.len() < 28 || u32le(p, 8) == 0 { return None; }
+    // JP20517 embeds the same kind-3 fixed spawn suffix after its outer
+    // reference. Require the repeated combat actor in the observed common
+    // header before accepting an uncatalogued template; the legacy scan below
+    // remains label-gated for other, structurally unverified variants.
+    let body=&p[8..];
+    if body.len()>=700 && u64le(body,0)==u64le(body,572) && u32le(body,580)==2048 {
+        if let Some(mut a)=spawn(body){a.record_reference=Some(u64le(p,0));return Some(a);}
+    }
     let mut candidates = BTreeMap::new();
     for n in (16..=p.len()-12).rev() {
         if p[n..n+4] != [3,0,0,0] || p[n+8..n+12] != [0,0,0,0] { continue; }
@@ -117,7 +126,7 @@ pub fn spawn(p:&[u8])->Option<Appearance> {
     let n=p.len()-102;
     if u32le(p,n)!=3 || u32le(p,n+8)!=0 { return None; }
     let template=p[n+4..n+8].iter().map(|b|format!("{b:02X}")).collect::<String>();
-    Some(Appearance { actor:u32le(p,0),name:monsters().get(&template)?.clone(),uid:None,
+    Some(Appearance { actor:u32le(p,0),name:monsters().get(&template).cloned().unwrap_or_else(||format!("NPC {template}")),uid:None,
         template:Some(template),offset:n,record_reference:None })
 }
 
@@ -130,6 +139,9 @@ pub struct Metadata {
 
 #[derive(Default, Debug)]
 pub struct Registry {
+    pub owners:ownership::Owners,
+    pub timing:BTreeMap<EntityKey,IdentityTiming>,
+    uid_members:BTreeMap<u64,BTreeSet<EntityKey>>,
     pub revision: u64,
     pub records: BTreeMap<EntityKey, Metadata>,
     current: BTreeMap<(u64,u64,u32), EntityKey>,
@@ -139,7 +151,13 @@ pub struct Registry {
     pub tracking: Tracking,
     pub profile_names:BTreeMap<u64,NameMetadata>,
 }
+#[derive(Clone,Debug,Default)]
+pub struct IdentityTiming {pub first:Option<crate::combat::Stamp>,pub received:Option<Evidence>,pub resolved:Option<Evidence>}
 impl Registry {
+    pub fn note_observed(&mut self,key:EntityKey,at:crate::combat::Stamp){self.timing.entry(key).or_default().first.get_or_insert(at);}
+    pub fn observe_at(&mut self,process:u64,binding:u64,actor:u32,at:crate::combat::Stamp)->Result<EntityKey>{
+        let key=self.observe(process,binding,actor)?;let timing=self.timing.entry(key).or_default();if timing.first.is_none(){timing.first=Some(at);}Ok(key)
+    }
     pub fn observe(&mut self, process: u64, binding: u64, actor: u32) -> Result<EntityKey> {
         if actor == 0 { return Err("zero entity ID".into()); }
         if let Some(k) = self.current.get(&(process,binding,actor)) { return Ok(*k); }
@@ -167,6 +185,7 @@ impl Registry {
         if meta.name.as_ref().is_some_and(|n| n != &a.name) { meta.conflicting = true; }
         if !meta.conflicting { meta.name = Some(a.name); }
         meta.uid = a.uid.or(meta.uid); meta.template = a.template.or(meta.template.take());
+        if let Some(uid)=meta.uid {self.uid_members.entry(uid).or_default().insert(key);}
         meta.kind = kind.or(meta.kind);
         if let Some(profile)=meta.uid.and_then(|uid| self.profile_names.get(&uid)) {
             if !profile.cached && (profile.conflicting || meta.name.as_ref().is_some_and(|name| name!=&profile.name)) { meta.conflicting=true; }
@@ -210,6 +229,8 @@ impl Registry {
         let meta = self.records.get_mut(&key).unwrap();
         if let Some((name,_)) = identity.name_server { meta.name = Some(name); meta.conflicting = false; }
         meta.uid = identity.uid.or(meta.uid); meta.cached = false; meta.kind = Some("player");
+        if let Some(uid)=meta.uid {self.uid_members.entry(uid).or_default().insert(key);}
+        let timing=self.timing.entry(key).or_default();timing.received.get_or_insert(source);timing.resolved.get_or_insert(source);
         if let Some(profile)=meta.uid.and_then(|uid| self.profile_names.get(&uid)) {
             if !profile.cached && (profile.conflicting || meta.name.as_ref().is_some_and(|name| name!=&profile.name)) { meta.conflicting=true; }
             else if meta.name.is_none() && !profile.conflicting { meta.name=Some(profile.name.clone());meta.cached=profile.cached; }
@@ -229,6 +250,10 @@ impl Registry {
     pub fn wire_appearance_context(&mut self,key:EntityKey,identity:Character,source:Evidence,context:(u64,u64))->Result<()> {
         self.tracking.wire_appearance(key,identity,source,context)?;self.sync_self();self.revision+=1;Ok(())
     }
+    pub fn wire_named_appearance(&mut self,key:EntityKey,identity:Character,name:Option<String>,source:Evidence,context:(u64,u64))->Result<()> {
+        self.tracking.appearance_context(key,context)?;
+        self.appearance_named_evidence(key,identity,name,source)
+    }
     fn check_metadata_name(name:&str) -> Result<()> {
         if name.trim().is_empty() || name.encode_utf16().count()>128 || name.chars().any(char::is_control) {
             Err("invalid player metadata name".into())
@@ -245,7 +270,8 @@ impl Registry {
         if profile.cached && !cached { profile.name=name.clone();profile.conflicting=false; }
         else { profile.conflicting |= profile.name!=name; }
         profile.source=source;profile.cached=cached;
-        for meta in self.records.values_mut().filter(|m| m.uid==Some(uid)) {
+        for key in self.uid_members.get(&uid).into_iter().flatten() {
+            let meta=self.records.get_mut(key).unwrap();
             if cached && meta.name.is_some() && !meta.cached { continue; }
             if profile.conflicting || (!meta.cached && meta.name.as_ref().is_some_and(|old| old!=&name)) { meta.conflicting=true; }
             else { meta.name=Some(name.clone());meta.cached=cached; }

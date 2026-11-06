@@ -34,6 +34,31 @@ Partial attachment, missing identity records, and capture loss remain visible.
 Current history is bounded at 32 encounters. Packet scene announcements are not
 treated as proof of a new instance.
 
+Observed pets are grouped with their evidenced owner while their original actor
+references and separate contributions remain in the audit. Right-click a source
+row to see its pet contribution and skill breakdown, with explicit and estimated
+amounts separated. Unrecognized skill IDs retain their amounts; internal action
+names are used when observed, otherwise the numeric ID is shown.
+
+HP estimation accounts for explicit contributions before allocating a residual.
+After stronger source matching, unresolved non-self loss is equally shared among
+distinct immediate attackers, with deterministic integer rounding. Activity is
+limited to eight messages in that TCP direction and 32 ms; a separate 200 ms wait
+allows delayed evidence without extending activity. Loss without eligible
+candidates remains unassigned. Allocations do not increase observed hit or
+critical counts. Audit v2 records the decisions, unassigned amounts, ownership,
+skill evidence and partial clock bounds; clock bounds are not exact HP timestamps.
+
+Timeline evidence is partial. The decoder retains embedded clock candidates,
+unwraps counters within a compatible TCP direction, and separates apparent clock
+resets into epochs. Clock-bearing messages before and after an observation form
+provisional packet-order brackets. Complete brackets can reject incompatible
+associations; incomplete brackets leave timing unknown. Death-event timestamp
+and effect-instance creation-time candidates remain supporting evidence. HP
+matching still primarily uses the capture-time and message-order window above.
+The clock constraints have not yet demonstrated improved attribution, and a
+verified reconstruction of server combat timing remains future work.
+
 ## Build
 
 Use a current Rust toolchain, Windows C/C++ build tools, and the Windows SDK
@@ -74,8 +99,9 @@ initial application boundary. Replay exit code 2 denotes partial coverage.
 
 ## Python DLL wrappers and tests
 
-Python is limited to the ctypes wrapper in `src/mabi_dps/native.py` and its
-tests. The wrapper exposes the capture DLL's ABI structures, adapter identities,
+The optional research UI below and the ctypes wrapper use Python. The meter
+itself remains a standalone Rust EXE. The wrapper in `src/mabi_dps/native.py`
+exposes the capture DLL's ABI structures, adapter identities,
 capture open/poll/close calls, and loss counters. The caller supplies approved
 TCP tuples. It does not provide a Python meter, GUI, replay decoder, automatic
 game discovery, or an elevated worker.
@@ -93,6 +119,62 @@ conversion, capture lifetime, and error handling. On Windows with a built DLL,
 they also load the real ABI and check invalid open requests without starting
 capture. Meter and protocol regressions live in the Rust test suite.
 
+## Focused research captures
+
+`scripts/capture_epochs.py` is a small, separate Tk UI for collecting evidence
+about missing teammate events and HP updates. It requires Python 3.12+ with Tk
+(included in the standard Windows installer). Capture, game discovery, UAC and
+ownership filtering use the existing Rust worker; no capture DLL is needed.
+Build the research backend without replacing your release meter:
+
+```powershell
+./scripts/build-research.ps1 -UseDocker
+pythonw ./dist/capture-epochs.pyw
+```
+
+Omit `-UseDocker` with a configured Windows Rust toolchain. You can also run
+`python ./scripts/capture_epochs.py`; `--backend PATH` selects the research EXE
+and `--output DIRECTORY` selects a parent folder for new sessions. The `.pyw`
+and `mabi-research.exe` in `dist` can be copied together to another Windows PC
+with Python and Tk installed.
+
+1. Launch the research UI and approve UAC. Capture begins immediately when the
+   game has an owned connection. Launch before entering the party/instance so
+   identity and target-appearance messages are available as warm-up evidence.
+2. Enter an epoch label and notes (party size, who attacks, target, observed HP,
+   known damage/DPS), then click **Start epoch** just before the experiment.
+3. Click **End epoch** after it. Repeat for more experiments; capture and warm-up
+   continue between epochs. Notes at start and end are both retained.
+4. Use **Quit and save** to drain pending traffic and finalize the session.
+   Closing an active epoch marks its end. Sessions have the usual one-hour cap.
+
+Each session is a new folder under `dist/recordings/research` by default:
+
+| File | Contents |
+| --- | --- |
+| `traffic.jsonl` | Raw approved game TCP payloads, sequence/flags, endpoints, original capture timestamps and ownership epochs; both directions and unknown messages included |
+| `events.jsonl` | Append-only epoch boundaries, labels/notes, ownership/process changes, capture reports and completion status |
+| `session.meta.json` | Epoch index and session completion/error summary; updated on boundaries and shutdown |
+
+All warm-up, in-epoch, and between-epoch traffic stays in the same file. Keep
+the **whole session folder** for analysis. For an epoch, replay its preceding
+traffic to warm transport/identities, then measure only packet timestamps in
+`start_ns <= timestamp_ns < end_ns`. Bounds are controller command receipt times
+in Unix nanoseconds. Ownership verification delays delivery by about 1.25s:
+file row positions at a click are **not** packet-time boundaries. After End,
+allow the tail to arrive or use Quit, which drains it. Epoch changes never
+reset transport or identity evidence. The research recorder retains identity
+messages for later replay; it does not run a live combat decoder or name cache.
+
+This captures game-owned TCP, including unrecognized application messages;
+it is not a machine-wide capture, UDP recorder, or original link-layer PCAP.
+Capture loss and rejected packets are reported, and no lossless guarantee is
+implied. No damage, opcode, or actor-identity filter decides what gets saved.
+The raw path stays independent of combat decoding and attribution. Existing
+replay accepts `traffic.jsonl`; ownership and epoch context live in the journal
+and metadata, so generic replay alone does not apply those research boundaries.
+The files contain private game traffic and remain ignored by Git.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -102,8 +184,8 @@ capture. Meter and protocol regressions live in the Rust test suite.
 | `native/core/data` | Embedded JP protocol lookup map |
 | `native/capture` | Our Packet Monitor library, linked directly into the Rust EXE |
 | `src/mabi_dps` | Python ctypes capture DLL wrapper |
-| `scripts` | Windows build and test entry points |
-| `tests` | Python DLL wrapper and ABI tests |
+| `scripts` | Windows build/test entry points and optional Python epoch capture UI |
+| `tests` | Python DLL wrapper, ABI and research UI tests |
 | `assets/data` | Embedded combat lookup labels; provenance is in `assets/provenance.json` |
 
 Private capture-based Rust tests use ignored files in `.local/test-fixtures`.

@@ -38,7 +38,6 @@ if ($dockerBuild) {
         '--mount',"type=bind,source=$nativeRoot,target=/repo/native",
         '--mount',"type=bind,source=$buildRoot,target=/target",
         '--mount',"type=bind,source=$cacheRoot,target=/cargo",
-        '--mount',"type=bind,source=$repoRoot/src/mabi_dps/jp_protocol_map.json,target=/repo/src/mabi_dps/jp_protocol_map.json,readonly",
         '--mount',"type=bind,source=$repoRoot/assets/data/combat-names.json,target=/repo/assets/data/combat-names.json,readonly",
         '--workdir','/repo/native','--env','CARGO_TARGET_DIR=/target','--env','CARGO_HOME=/cargo')
     if ($Task -eq 'Build') {

@@ -8,7 +8,7 @@ pub const PROFILE: &str = "mmh-jp.4-observed-v5";
 pub fn normalize(wire: i32) -> i32 {
     static MAP: OnceLock<BTreeMap<i32, i32>> = OnceLock::new();
     *MAP.get_or_init(|| serde_json::from_str(include_str!(
-        "../../../src/mabi_dps/jp_protocol_map.json")).expect("embedded JP map"))
+        "../data/jp_protocol_map.json")).expect("embedded JP map"))
         .get(&wire).unwrap_or(&wire.saturating_add(200_000))
 }
 

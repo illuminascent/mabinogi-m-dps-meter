@@ -41,18 +41,17 @@ resource compiler. With MSVC, run from an x64 Developer PowerShell where
 `cargo`, the linker, and `rc.exe` are available:
 
 ```powershell
-.scripts
-ust-task.ps1 -Task Fetch
-.scriptsuild-rust.ps1
-.distmabi-meter.exe
+./scripts/rust-task.ps1 -Task Fetch
+./scripts/build-rust.ps1
+./dist/mabi-meter.exe
 ```
 
 The first step fetches the dependencies pinned by `native/Cargo.lock`. Builds
 and tests then run offline with that lockfile. Build caches go in `.build`, and
 the release EXE goes in `dist`. Neither directory is committed.
 
-The existing GNU cross-build is available with `-UseDocker -Image IMAGE` when
-you have a Rust image with the `x86_64-pc-windows-gnu` target, MinGW linker and
+The GNU cross-build is available with `-UseDocker -Image IMAGE` when you have
+a Rust image with the `x86_64-pc-windows-gnu` target, MinGW linker and
 `x86_64-w64-mingw32-windres`. Docker is an optional build tool, not a runtime
 dependency. Local validation used that cross-build; MSVC needs separate
 environment validation.
@@ -60,11 +59,11 @@ environment validation.
 Useful commands:
 
 ```powershell
-.distmabi-meter.exe --check-system
-.distmabi-meter.exe ui --demo
-.distmabi-meter.exe replay capture.jsonl --audit replay-audit.json
-.distmabi-meter.exe live --seconds 30
-.scripts	est-rust.ps1
+./dist/mabi-meter.exe --check-system
+./dist/mabi-meter.exe ui --demo
+./dist/mabi-meter.exe replay capture.jsonl --audit replay-audit.json
+./dist/mabi-meter.exe live --seconds 30
+./scripts/test-rust.ps1
 cargo test --manifest-path native/capture/Cargo.toml --offline --locked
 ```
 
@@ -73,45 +72,41 @@ Replay accepts TCP JSONL or classic PCAP; PCAP requires `--port NUMBER`.
 No game port is hardcoded. `--assume-aligned` is only for captures with a known
 initial application boundary. Replay exit code 2 denotes partial coverage.
 
-## Python support tools
+## Python DLL wrappers and tests
 
-The independent Python replay, capture, and comparison implementation is kept
-under `src/mabi_dps`. The Rust application does not import or launch it.
-Use Python 3.12+ with Tkinter for the optional comparison GUI:
+Python is limited to the ctypes wrapper in `src/mabi_dps/native.py` and its
+tests. The wrapper exposes the capture DLL's ABI structures, adapter identities,
+capture open/poll/close calls, and loss counters. The caller supplies approved
+TCP tuples. It does not provide a Python meter, GUI, replay decoder, automatic
+game discovery, or an elevated worker.
 
-```powershell
-python -m venv .venv
-..venvScriptspython.exe -m pip install -r requirements-live.txt
-..venvScriptspython.exe run_meter.py demo
-..venvScriptspython.exe run_meter.py replay capture.jsonl --audit replay-audit.json
-..venvScriptspython.exe -m unittest discover -s tests -v
-```
-
-Only the optional Python live path needs our capture DLL:
+The wrappers and tests use only the Python standard library. Build the optional
+DLL and run its tests with Python 3.12+:
 
 ```powershell
-.scriptsuild-capture.ps1
-..venvScriptspython.exe run_meter.py gui
+./scripts/build-capture.ps1
+python -m unittest discover -s tests -v
 ```
 
-That DLL is built into `dist/mabi_capture.dll`. Python recordings go in the
-repository's ignored `recordings` directory and its name cache goes in `.local`.
-The Python GUI remains a comparison tool and has different controls from the
-Rust release.
+The DLL is written to `dist/mabi_capture.dll`. Tests cover ABI layouts, tuple
+conversion, capture lifetime, and error handling. On Windows with a built DLL,
+they also load the real ABI and check invalid open requests without starting
+capture. Meter and protocol regressions live in the Rust test suite.
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
 | `native/app` | Frameless Win32 UI, process discovery, authenticated worker IPC, embedded icon |
-| `native/core` | TCP reassembly, bounded decoding, identity, encounters, totals, replay, synthetic tests |
+| `native/core` | TCP reassembly, bounded decoding, identity, encounters, totals, replay, tests |
+| `native/core/data` | Embedded JP protocol lookup map |
 | `native/capture` | Our Packet Monitor library, linked directly into the Rust EXE |
-| `src/mabi_dps` | Python replay, recording and comparison tools; shared JP opcode map |
+| `src/mabi_dps` | Python ctypes capture DLL wrapper |
 | `scripts` | Windows build and test entry points |
-| `tests` | Python regressions |
+| `tests` | Python DLL wrapper and ABI tests |
 | `assets/data` | Embedded combat lookup labels; provenance is in `assets/provenance.json` |
 
-Private capture-based tests are optional and skip or remain ignored when their
-local fixtures are unavailable. Public synthetic tests need no reference
-distribution. Reference binaries, extracted UI artwork, recordings, research
-notes, prototype artifacts and compiled outputs are excluded from this repository.
+Private capture-based Rust tests are optional and remain ignored when local
+fixtures are unavailable. Public synthetic tests need no reference distribution.
+Reference binaries, extracted UI artwork, recordings, research notes, prototype
+artifacts and compiled outputs are excluded from this repository.

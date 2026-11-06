@@ -1,1 +1,1 @@
-"""Independent offline Mabinogi Mobile DPS protocol and replay prototype."""
+"""Python ctypes wrappers for the Rust capture DLL. Meter logic lives in Rust."""

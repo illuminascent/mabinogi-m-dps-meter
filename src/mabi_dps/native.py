@@ -1,13 +1,25 @@
 """C ABI client for our independently built Rust DLL, never a bundled helper."""
 import ctypes as C
 import ipaddress
+import os
 from pathlib import Path
-import socket
-
-from .windows import _bind, _dll, system_directory
 
 ROOT = Path(__file__).resolve().parents[2]
 DLL_PATH = ROOT / 'dist' / 'mabi_capture.dll'
+
+
+def _dll(name):
+    if os.name != 'nt':
+        raise OSError('Windows DLL wrappers require native Windows Python')
+    # LOAD_LIBRARY_SEARCH_SYSTEM32: never search the working directory.
+    return C.WinDLL(name, use_last_error=True, winmode=0x800)
+
+
+def _bind(dll, name, result, arguments):
+    function = getattr(dll, name)
+    function.restype = result
+    function.argtypes = arguments
+    return function
 
 
 class NativeFlow(C.Structure):
@@ -113,7 +125,7 @@ def native_flows(rows, adapters):
         if ip.version != row['family'] or remote.version != ip.version:
             raise ValueError('Mixed IP families in capture tuple')
         if ip.is_link_local or remote.is_link_local:
-            raise ValueError('Scoped/link-local capture is not supported by this prototype')
+            raise ValueError('Scoped/link-local capture is not supported')
         guids = adapters.get(str(ip), set())
         if len(guids) != 1:
             raise ValueError(f'No unique adapter GUID for {ip}')

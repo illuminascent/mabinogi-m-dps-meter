@@ -14,6 +14,18 @@ pub struct EntityKey {
     pub process: u64, pub binding: u64, pub actor: u32, pub generation: u32,
 }
 
+/// Generic NPC type is not a faction. Player characters and their pets share
+/// one confirmed side; other affiliations remain unknown until proved.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum DamageSide { Unknown, Player }
+pub fn damage_side_from_kind(kind:&str)->DamageSide {
+    if kind.eq_ignore_ascii_case("player") {DamageSide::Player}else{DamageSide::Unknown}
+}
+pub fn damage_eligible_sides(source:EntityKey,target:EntityKey,source_side:DamageSide,target_side:DamageSide)->bool {
+    source.actor!=0 && source!=target && !(source.process==target.process && source.binding==target.binding && source.actor==target.actor)
+        && !(source_side==DamageSide::Player && target_side==DamageSide::Player)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Character {
     pub uid: Option<u64>,
@@ -161,6 +173,14 @@ pub struct IdentityTiming {pub first:Option<crate::combat::Stamp>,pub last:Optio
 #[derive(Clone,Debug)]
 pub struct PersonalProof{pub key:EntityKey,pub evidence:Evidence,pub offset:usize,pub end:usize,pub pets:Vec<personal::Pet>}
 impl Registry {
+    pub fn damage_side(&self,key:EntityKey)->DamageSide {
+        let player=|key|self.records.get(&key).is_some_and(|m|m.kind.is_some_and(|k|damage_side_from_kind(k)==DamageSide::Player))
+            || self.personal_bindings.iter().any(|p|p.key==key);
+        if player(key) || self.owner(key).is_some_and(player) {DamageSide::Player}else{DamageSide::Unknown}
+    }
+    pub fn damage_eligible(&self,source:EntityKey,target:EntityKey)->bool {
+        damage_eligible_sides(source,target,self.damage_side(source),self.damage_side(target))
+    }
     pub fn note_observed(&mut self,key:EntityKey,at:crate::combat::Stamp){
         let t=self.timing.entry(key).or_default();t.first.get_or_insert(at);
         if t.last.is_none_or(|old|at.timestamp_ns>=old.timestamp_ns){t.last=Some(at);}

@@ -7,9 +7,9 @@ fn health()->Health{let mut h=Health::default();h.self_sources(true,[key(99)].in
 #[test]
 fn capacity_rejection_cannot_discard_already_committed_expired_allocations(){
     let mut h=health();
-    for actor in 1..=4096{h.update(key(actor),100,at(0)).unwrap();}
+    for actor in 1..=mabi_meter_core::health::MAX_SLOTS as u32{h.update(key(actor),100,at(0)).unwrap();}
     h.update(key(2),90,at(1)).unwrap();h.attack(attack(key(1),key(2),2)).unwrap();
-    assert!(h.update(key(4097),100,at(300)).is_err());
+    assert!(h.update(key(mabi_meter_core::health::MAX_SLOTS as u32+1),100,at(300)).is_err());
     assert_eq!(h.allocated,0); // Rejection has no expiry side effects.
     let estimates=h.tick(300_000_000);
     assert_eq!(estimates.iter().map(|e|e.amount as u128).sum::<u128>(),h.allocated);
@@ -27,8 +27,9 @@ fn capacity_rejection_cannot_discard_already_committed_expired_allocations(){
     h.attack(attack(source,target,6)).unwrap();h.attack(attack(source,target,7)).unwrap();
     h.update(target,1000,at(8)).unwrap();let estimates=h.flush();assert_eq!(estimates.len(),2);assert_eq!(estimates[0].amount,100);assert_eq!(estimates[1].amount,70);
     assert_eq!((h.loss,h.explicit,h.allocated,h.unassigned),(200,30,170,0));
-    h.update(target,1000,at(9)).unwrap();h.update(target,900,at(10)).unwrap();h.attack(attack(source,target,11)).unwrap();h.clear();assert!(h.flush().is_empty());
-    assert_eq!(h.unassigned,100);assert_eq!(h.audit.back().unwrap().reason,"continuity invalidated");
+    h.update(target,1000,at(9)).unwrap();h.update(target,900,at(10)).unwrap();h.attack(attack(source,target,11)).unwrap();h.clear();
+    assert_eq!(h.flush().iter().map(|e|e.amount).sum::<u64>(),100);
+    assert_eq!(h.unassigned,0);assert_eq!(h.loss,h.explicit+h.allocated);
 }
 #[test] fn encounters_history_and_new_battle_navigation() {
     let mut m=Meter::default();m.automatic_encounters=true;let source=m.registry.observe(0,1,1).unwrap();let target=m.registry.observe(0,1,2).unwrap();m.registry.assign(Some(source)).unwrap();
@@ -77,7 +78,7 @@ fn capacity_rejection_cannot_discard_already_committed_expired_allocations(){
     assert!(h.update(target,80,at(3)).unwrap().is_empty());h.attack(attack(source,target,4)).unwrap();h.clear_context(2);
     assert_eq!(h.flush()[0].amount,10);
 }
-#[test] fn equal_sharing_is_distinct_exact_rotating_and_unknown_skill(){
+#[test] fn symmetric_sparse_prior_is_frequency_neutral_conserved_and_keeps_packet_skill(){
     let mut h=health();let t=key(10);h.update(t,100,at(0)).unwrap();
     let mut totals=[0,0,0];
     for round in 0..3{
@@ -85,13 +86,13 @@ fn capacity_rejection_cannot_discard_already_committed_expired_allocations(){
         for (i,a) in [1,1,2,3].into_iter().enumerate(){h.attack(attack(key(a),t,f+1+i as u64)).unwrap();}
         h.update(t,100-(round+1)*4,at(f+5)).unwrap();
     }
-    let estimates=h.flush();assert_eq!(estimates.len(),9);for e in estimates{assert_eq!(e.skill,None);totals[(e.source.actor-1) as usize]+=e.amount;}
+    let estimates=h.flush();assert_eq!(estimates.len(),9);for e in estimates{assert_eq!(e.skill,Some(7000001));totals[(e.source.actor-1) as usize]+=e.amount;}
     assert_eq!(totals,[4,4,4]);assert_eq!(h.unassigned,0);
 }
-#[test] fn immediate_window_self_exclusion_missing_baseline_zero_and_overkill(){
+#[test] fn message_count_and_self_selection_do_not_exclude_packet_supported_damage(){
     let t=key(10);let mut h=health();h.attack(attack(key(1),t,0)).unwrap();h.update(t,100,at(1)).unwrap();
-    h.update(t,90,at(2)).unwrap();h.attack(attack(key(1),t,11)).unwrap();assert!(h.flush().is_empty());assert_eq!(h.unassigned,10);
-    h.update(t,90,at(12)).unwrap();h.update(t,80,at(13)).unwrap();h.attack(attack(key(99),t,14)).unwrap();h.attack(attack(key(1),t,15)).unwrap();assert!(h.flush().is_empty());
+    h.update(t,90,at(2)).unwrap();h.attack(attack(key(1),t,11)).unwrap();assert_eq!(h.flush()[0].amount,10);assert_eq!(h.unassigned,0);
+    h.update(t,90,at(12)).unwrap();h.update(t,80,at(13)).unwrap();h.attack(attack(key(99),t,14)).unwrap();h.attack(attack(key(1),t,15)).unwrap();assert_eq!(h.flush().iter().map(|e|e.amount).sum::<u64>(),10);
     h.update(t,10,at(16)).unwrap();h.update(t,0,at(17)).unwrap();h.explicit(key(99),t,15,at(18)).unwrap();assert!(h.flush().is_empty());
     assert!(h.audit.back().unwrap().explicit_mismatch);assert_eq!(h.loss,h.explicit+h.allocated+h.unassigned);
 }
@@ -105,22 +106,22 @@ fn capacity_rejection_cannot_discard_already_committed_expired_allocations(){
     h.attack(attack(key(1),t,2)).unwrap();h.attack(attack(key(2),t,3)).unwrap();
     h.update(t,80,at(4)).unwrap();h.attack(attack(key(3),t,5)).unwrap();
     h.explicit(key(1),t,4,at(40)).unwrap();
-    // Delivery waiting never makes this stale attacker eligible.
-    h.attack(attack(key(4),t,41)).unwrap();
+    // Retention does not extend the distinct capture-local association policy.
+    h.attack(attack(key(4),t,150)).unwrap();
     let estimates=h.tick(300_000_000);assert_eq!(estimates.len(),2);
     assert_eq!((estimates[0].source,estimates[0].amount),(key(2),6));assert_eq!((estimates[1].source,estimates[1].amount),(key(3),10));
     assert_eq!((h.loss,h.explicit,h.allocated,h.unassigned),(20,4,16,0));assert!(h.tick(400_000_000).is_empty());
     assert_eq!(h.refinements.len(),1);assert_eq!(h.refinements[0].amount,4);
 }
-#[test] fn sentinel_amount_cannot_establish_self_exclusion_or_suppress_explicit_hits(){
+#[test] fn unpublished_sentinel_does_not_erase_supported_hp_or_invent_explicit_damage(){
     let mut h=health();let t=key(10);h.update(t,100,at(0)).unwrap();h.update(t,90,at(1)).unwrap();h.attack(attack(key(1),t,2)).unwrap();
-    h.sentinel(t,at(3));assert!(h.flush().is_empty());assert_eq!(h.unassigned,10);assert_eq!(h.outcomes["sentinel or out-of-range amount"],1);
+    h.sentinel(t,at(3));assert_eq!(h.flush()[0].amount,10);assert_eq!(h.unassigned,0);assert_eq!(h.explicit,0);assert_eq!(h.outcomes["unpublished sentinel; actor inference uncertain"],1);
 }
-#[test] fn later_hp_observation_closes_candidate_activity_during_delivery_wait(){
+#[test] fn later_activity_cannot_retroactively_make_an_older_budget_warm(){
     for next_hp in [90,100]{
         let mut h=health();let t=key(10);h.update(t,100,at(0)).unwrap();h.update(t,90,at(1)).unwrap();
         h.update(t,next_hp,at(2)).unwrap();h.attack(attack(key(1),t,3)).unwrap();
-        assert!(h.flush().is_empty());assert_eq!(h.unassigned,10);
+        let inferred=h.flush();assert!(inferred.is_empty());assert_eq!(h.loss,10);assert_eq!(h.unassigned,10);
     }
 }
 #[test] #[ignore="private packet fixture"] fn real_five_self_joins_and_inferred_damage() {

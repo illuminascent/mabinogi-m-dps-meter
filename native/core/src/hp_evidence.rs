@@ -75,15 +75,15 @@ impl Ledger {
         self.unbound.push_back(Unbound{at,actor,hp,reason});
         self.outcome(at.frame,"numeric HP decoded; binding unresolved");
     }
-    /// Numeric comparisons across a continuity break are audit-only. They are
-    /// never fed back as damage; the causal matcher starts a fresh baseline.
+    /// Diagnostic comparisons do not decide eligibility. Numeric owns the
+    /// canonical same-object comparison and forwards uncertain gap declines.
     pub fn observe(&mut self,target:EntityKey,hp:u64,at:Stamp,role:&'static str,conditional_key:bool){
         let key=(at.context,target);
         let previous=self.last.remove(&key);
         let broken=self.broken.remove(&key);
         let comparison=if hp==i64::MAX as u64{"MAX sentinel"}
             else if let Some((old,n))=previous{
-                if broken || old.continuity!=at.continuity{"gap comparison; audit only"}
+                if broken || old.continuity!=at.continuity{"gap comparison; canonical numeric decides credit"}
                 else if hp<n{"decrease"}else if hp>n{"rise"}else{"unchanged"}
             }else{"initial observation"};
         *self.comparisons.entry(comparison.into()).or_default()+=1;

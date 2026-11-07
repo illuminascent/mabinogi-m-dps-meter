@@ -58,7 +58,7 @@ fn feed(r:&mut Replay,seq:&mut u32,wire:i32,p:Vec<u8>,time:u64){let payload=prot
     let mut state=vec![0;20];put64(&mut state,0,1);put32(&mut state,12,99999999);feed(&mut r,&mut seq,171117,state,0);
     put64(&mut hp,12,90);feed(&mut r,&mut seq,170205,hp,0);
     let mut a=vec![0;35];put32(&mut a,0,1);put32(&mut a,8,2);feed(&mut r,&mut seq,20526,a,0);r.finish();
-    assert_eq!(r.meter.session.estimated_total.damage,10);assert_eq!(r.meter.skills.keys().next().unwrap().3,Some(99999999));assert_eq!(r.health.audit.back().unwrap().allocations[0].skill,Some(99999999));
+    assert_eq!(r.meter.session.estimated_total.damage,10);assert_eq!(r.meter.skills.keys().next().unwrap().3,Some(99999999));assert_eq!(r.health.audit.back().unwrap().allocations[0].skill,None); // Packet key is unknown; the meter records the linked confirmed action.
 }
 #[test] fn replay_resolves_late_attack_skill_and_preserves_explicit_amounts(){
     let mut r=Replay::new(true);let mut seq=1;let mut p=vec![0;53];put32(&mut p,0,1);put32(&mut p,8,2);put64(&mut p,16,123);feed(&mut r,&mut seq,21196,p,0);
@@ -100,12 +100,12 @@ fn feed(r:&mut Replay,seq:&mut u32,wire:i32,p:Vec<u8>,time:u64){let payload=prot
     r.feed(Input::Segment(Segment{timestamp_ns:0,flow:Flow{src:"192.0.2.2".into(),dst:"192.0.2.1".into(),sport:2345,dport:1234},seq:1,payload:vec![255;40],syn:false,fin:false,rst:false,ack:true})).unwrap();
     r.finish();assert_eq!(r.meter.session.estimated_total.damage,10);assert_eq!(r.combat.attacks.len(),1);
 }
-#[test] fn socket_refresh_preserves_incarnations_but_not_an_old_hp_baseline(){
+#[test] fn socket_refresh_preserves_incarnations_and_finite_endpoint_obligation(){
     let mut r=Replay::new(true);let mut seq=1;let mut hp=vec![0;21];put64(&mut hp,0,2);put32(&mut hp,8,8);put64(&mut hp,12,100);feed(&mut r,&mut seq,170205,hp.clone(),0);
     let before=r.meter.registry.records.keys().next().copied().unwrap();
     r.feed(Input::Segment(Segment{timestamp_ns:1,flow:Flow{src:"192.0.2.1".into(),dst:"192.0.2.2".into(),sport:1234,dport:2345},seq,payload:Vec::new(),syn:false,fin:true,rst:false,ack:true})).unwrap();seq+=1;
     put64(&mut hp,12,50);feed(&mut r,&mut seq,170205,hp,2);let mut a=vec![0;35];put32(&mut a,0,1);put32(&mut a,8,2);feed(&mut r,&mut seq,20526,a,2);r.finish();
-    assert!(r.meter.registry.is_current(before));assert_eq!(r.health.outcomes["initial baseline"],2);assert_eq!(r.meter.session.estimated_total.damage,0);
+    assert!(r.meter.registry.is_current(before));assert_eq!(r.health.outcomes["canonical initial baseline; no predecessor arithmetic"],1);assert_eq!(r.meter.session.estimated_total.damage,50);
 }
 #[test] fn ambiguous_skills_conserve_amount_and_do_not_merge_equal_labels(){
     let mut c=Combat::default();let (source,target)=(key(1),key(2));

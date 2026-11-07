@@ -1,21 +1,35 @@
 use crate::{identity::{EntityKey, Registry,tracking::SelfBinding}, protocol::Damage, Result};
 use std::collections::{BTreeMap,BTreeSet,VecDeque};
-use std::sync::{Arc,OnceLock,atomic::{AtomicU64,Ordering}};
+use std::sync::{Arc,atomic::{AtomicU64,Ordering}};
 mod live_tracks;
 
 pub const MAX_CELLS: usize = 131072;
+pub const DEFAULT_IDLE_NS:u64=15_000_000_000;
 const MAX_RAW_HITS: usize = 65536;
+// Match Registry's metadata bound. Additional captured generation-zero actors
+// require Attribution's sole capacity fallback to an admitted actor.
+const MAX_SOURCES:usize=32768;
+/// A receipt is a globally increasing commit sequence for one Meter lifetime.
+/// Retry only the latest receipt, with the same credit, after an uncertain ACK.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum CreditCommit { Committed, AlreadyCommitted }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum CreditAdmission { Ready, SourceCapacity }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hit { pub timestamp_ns: u64, pub source: EntityKey, pub target: EntityKey, pub damage: Damage }
 /// Stable membership shared with delayed skill resolution, including after a
 /// late join moves a retained hit into an encounter. Zero means session only.
 #[derive(Clone,Debug)]
 pub struct HitAssignment(Arc<HitMembership>);
 #[derive(Debug)]
-struct HitMembership { encounter:AtomicU64, skill:OnceLock<Option<u32>>, boundary:u64 }
+struct HitMembership { encounter:AtomicU64, skill:AtomicU64, boundary:u64 }
 impl HitAssignment {
     pub fn encounter(&self)->Option<u64> { match self.0.encounter.load(Ordering::Relaxed) {0=>None,id=>Some(id)} }
+    fn recorded_skill(&self)->Option<Option<u32>> {
+        match self.0.skill.load(Ordering::Relaxed) {0=>None,1=>Some(None),n=>Some(Some((n-2) as u32))}
+    }
+    fn set_skill(&self,skill:Option<u32>) {self.0.skill.store(skill.map_or(1,|s|s as u64+2),Ordering::Relaxed);}
 }
 #[derive(Clone, Default, Debug)]
 pub struct Aggregate { pub damage: u128, pub hits: u64,pub allocations:u64, pub flags: [u64;5], pub start: Option<u64>, pub end: Option<u64> }
@@ -37,6 +51,11 @@ impl Aggregate {
         }
         self.start = Some(self.start.map_or(h.timestamp_ns,|t| t.min(h.timestamp_ns)));
         self.end = Some(self.end.map_or(h.timestamp_ns,|t| t.max(h.timestamp_ns))); Ok(())
+    }
+    fn credit(&mut self,h:&Hit,inferred:bool)->Result<()> {
+        self.add(h)?;
+        if inferred {self.hits-=1;self.allocations=self.allocations.checked_add(1).ok_or("allocation overflow")?;}
+        Ok(())
     }
     pub fn duration(&self) -> f64 { self.end.unwrap_or(0).saturating_sub(self.start.unwrap_or(0)) as f64 / 1e9 }
     pub fn dps(&self) -> Option<f64> { let d = self.duration(); (d > 0.0).then(|| self.damage as f64/d) }
@@ -98,18 +117,57 @@ pub struct Meter {
     pub viewing:Option<u64>,pub inferred_hits:VecDeque<Hit>,pub idle_ns:u64,pub last_self_activity:Option<u64>,pub automatic_encounters:bool,
     raw_encounters:VecDeque<HitAssignment>,inferred_encounters:VecDeque<HitAssignment>,target_query:String,
     combat_boundary:u64,pending_nodes:BTreeMap<EntityKey,u64>,latest_combat_ns:u64,backtrack_floor_ns:u64,
+    last_credit_receipt:Option<(u64,Hit,bool,Option<u32>)>,
+    skill_compacted:bool,
 }
 impl Default for Meter {
     fn default() -> Self {
         Self { skill_names:BTreeMap::new(),skills:BTreeMap::new(),skill_matches:VecDeque::new(),skill_evictions:0,registry: Registry::default(),session:View::default(),encounters: [(1,Encounter::new(1))].into(),current: 1,
             binding: 1,revision: 0,selected: None,partial: false,last_command: 0,last_seen_command: 0,
             transitions: BTreeSet::new(),raw_hits: VecDeque::new(),evicted_hits: 0,cells: 0,
-            viewing:None,inferred_hits:VecDeque::new(),idle_ns:15_000_000_000,last_self_activity:None,automatic_encounters:false,
+            viewing:None,inferred_hits:VecDeque::new(),idle_ns:DEFAULT_IDLE_NS,last_self_activity:None,automatic_encounters:false,
             raw_encounters:VecDeque::new(),inferred_encounters:VecDeque::new(),target_query:String::new(),
-            combat_boundary:0,pending_nodes:BTreeMap::new(),latest_combat_ns:0,backtrack_floor_ns:0 }
+            combat_boundary:0,pending_nodes:BTreeMap::new(),latest_combat_ns:0,backtrack_floor_ns:0,last_credit_receipt:None,skill_compacted:false }
     }
 }
 impl Meter {
+    /// Source admission is the only capacity prerequisite for authoritative
+    /// credit. The assigner can consult this before choosing a bounded actor.
+    /// Failure does not mutate either packet or meter state.
+    pub fn credit_acceptance(&self,source:EntityKey,inferred:bool)->Result<()> {
+        if self.credit_admission(source,inferred)==CreditAdmission::SourceCapacity {return Err("Session source capacity reached".into());}
+        Ok(())
+    }
+    /// Typed capacity-only signal: arithmetic errors remain failed immutable
+    /// credit leases and must never trigger actor reselection.
+    pub fn credit_admission(&self,source:EntityKey,inferred:bool)->CreditAdmission {
+        let sources=if inferred {&self.session.estimates}else{&self.session.sources};
+        if !sources.contains_key(&source) && sources.len()>=MAX_SOURCES {CreditAdmission::SourceCapacity}else{CreditAdmission::Ready}
+    }
+    /// Captured actor keys whose authoritative amount cells are already
+    /// admitted. Selection among these remains exclusively Attribution's job.
+    pub fn admitted_sources(&self,inferred:bool)->impl Iterator<Item=EntityKey>+'_ {
+        let sources=if inferred {&self.session.estimates}else{&self.session.sources};
+        sources.keys().copied()
+    }
+    pub fn receipt_committed(&self,receipt:u64)->bool {self.last_credit_receipt.as_ref().is_some_and(|(id,_,_,_)|*id==receipt)}
+    /// Commit actor amount and skill together, then allow the durable owner to
+    /// acknowledge its outbox. Receipts span explicit/inferred credits and all
+    /// chunks. Rejected admission/overflow leaves the receipt and meter intact.
+    pub fn commit_credit(&mut self,receipt:u64,h:Hit,inferred:bool,skill:Option<u32>)->Result<CreditCommit> {
+        if let Some((last,previous,previous_inferred,previous_skill))=&self.last_credit_receipt {
+            if receipt==*last {
+                if h!=*previous || inferred!=*previous_inferred || skill!=*previous_skill {return Err("credit receipt payload changed".into());}
+                return Ok(CreditCommit::AlreadyCommitted);
+            }
+            if receipt<*last {return Err("credit receipt is not increasing".into());}
+        }
+        self.add_kind(h.clone(),inferred)?;
+        let assignment=self.last_hit_assignment(inferred).expect("committed history membership");
+        self.attribute_recorded_skill(&h,&assignment,skill,inferred).expect("derived skill credit is infallible");
+        self.last_credit_receipt=Some((receipt,h,inferred,skill));
+        Ok(CreditCommit::Committed)
+    }
     pub fn last_hit_encounter(&self,inferred:bool)->Option<u64>{
         self.last_hit_assignment(inferred).and_then(|a|a.encounter())
     }
@@ -117,15 +175,48 @@ impl Meter {
         (if inferred{&self.inferred_encounters}else{&self.raw_encounters}).back().cloned()
     }
     pub fn attribute_recorded_skill(&mut self,h:&Hit,assignment:&HitAssignment,skill:Option<u32>,inferred:bool)->Result<()> {
-        if assignment.0.skill.get().is_some(){return Err("hit skill already attributed".into());}
+        if assignment.recorded_skill().is_some(){return Err("hit skill already attributed".into());}
         self.attribute_skill(h,assignment.encounter().unwrap_or(0),skill,inferred)?;
-        assignment.0.skill.set(skill).expect("single core writer");Ok(())
+        assignment.set_skill(skill);Ok(())
+    }
+    /// Refine already published Unknown detail without changing actor credit or
+    /// the original commit receipt. Capacity/reclaimed detail leaves Unknown;
+    /// this optional metadata operation never blocks packet processing.
+    pub fn refine_recorded_skill(&mut self,h:&Hit,assignment:&HitAssignment,skill:Option<u32>,inferred:bool)->Result<()> {
+        let Some(skill)=skill else{return Ok(());};
+        if self.skill_compacted || assignment.recorded_skill()!=Some(None) {return Ok(());}
+        let encounter=assignment.encounter().unwrap_or(0);
+        let unknown=(encounter,h.source,h.target,None,inferred);
+        let precise=(encounter,h.source,h.target,Some(skill),inferred);
+        let Some(old)=self.skills.get(&unknown).copied() else {return Ok(());};
+        let Some(remaining)=old.checked_sub(h.damage.amount as u128) else {self.partial=true;return Ok(());};
+        if !self.skills.contains_key(&precise) && remaining!=0 && self.skills.len()>=MAX_CELLS {self.partial=true;return Ok(());}
+        let Some(next)=self.skills.get(&precise).copied().unwrap_or(0).checked_add(h.damage.amount as u128) else {self.partial=true;return Ok(());};
+        if remaining==0 {self.skills.remove(&unknown);}else{self.skills.insert(unknown,remaining);}
+        self.skills.insert(precise,next);assignment.set_skill(Some(skill));self.revision+=1;
+        Ok(())
     }
     pub fn attribute_skill(&mut self,h:&Hit,encounter:u64,skill:Option<u32>,inferred:bool)->Result<()> {
-        let key=(encounter,h.source,h.target,skill,inferred);
-        if !self.skills.contains_key(&key) && self.skills.len()>=MAX_CELLS{return Err("skill aggregate capacity reached".into());}
-        let a=self.skills.entry(key).or_default();*a=a.checked_add(h.damage.amount as u128).ok_or("skill damage overflow")?;self.revision+=1;Ok(())
+        let mut key=if self.skill_compacted {(encounter,h.source,Self::unknown_skill_target(),None,inferred)}else{(encounter,h.source,h.target,skill,inferred)};
+        if !self.skills.contains_key(&key) && self.skills.len()>=MAX_CELLS {
+            // Ability/target detail is expendable; authoritative actor amounts
+            // live in session/encounter views. Keep current/pending unknown
+            // buckets, rather than turning detail pressure into lost credit.
+            let mut compact:BTreeMap<_,u128>=BTreeMap::new();
+            for ((e,s,_,_,i),amount) in &self.skills {
+                if *e==0 || *e==self.current {
+                    *compact.entry((*e,*s,Self::unknown_skill_target(),None,*i)).or_default()+=amount;
+                }
+            }
+            self.skills=compact;self.partial=true;self.skill_compacted=true;
+            key=(encounter,h.source,Self::unknown_skill_target(),None,inferred);
+        }
+        // A delayed archived resolution may arrive after its detail was
+        // reclaimed. Snapshot derives its Unknown residual from actor totals.
+        if !self.skills.contains_key(&key) && self.skills.len()>=MAX_CELLS {self.partial=true;return Ok(());}
+        let a=self.skills.entry(key).or_default();*a=a.checked_add(h.damage.amount as u128).expect("skill amount is a subset of checked session credit");self.revision+=1;Ok(())
     }
+    fn unknown_skill_target()->EntityKey {EntityKey{process:0,binding:0,actor:0,generation:0}}
     pub fn skill_evidence(&mut self,at:crate::combat::Stamp,source:EntityKey,target:EntityKey,matched:crate::combat::SkillMatch){
         if self.skill_matches.len()==8192{self.skill_matches.pop_front();self.skill_evictions+=1;}
         self.skill_matches.push_back((at,source,target,matched));
@@ -135,17 +226,17 @@ impl Meter {
     }
     pub fn add_estimate(&mut self,h:Hit)->Result<()> { self.add_kind(h,true) }
     fn add_kind(&mut self,h:Hit,inferred:bool)->Result<()> {
-        self.latest_combat_ns=self.latest_combat_ns.max(h.timestamp_ns);
+        if !self.registry.damage_eligible(h.source,h.target){return Err("friendly-fire attribution rejected".into());}
+        self.credit_acceptance(h.source,inferred)?;
         // Capture totals/history accept every observed source. Encounter policy
         // only controls the selected measurement, never packet eligibility.
         let (total,sources)=if inferred{(&mut self.session.estimated_total,&mut self.session.estimates)}else{(&mut self.session.total,&mut self.session.sources)};
-        if !sources.contains_key(&h.source) && sources.len()>=16384{return Err("Session source capacity reached".into());}
-        let mut next_total=total.clone();next_total.add(&h)?;let mut next_source=sources.get(&h.source).cloned().unwrap_or_default();next_source.add(&h)?;
-        if inferred {next_total.hits-=1;next_source.hits-=1;next_total.allocations+=1;next_source.allocations+=1;}
+        let mut next_total=total.clone();next_total.credit(&h,inferred)?;let mut next_source=sources.get(&h.source).cloned().unwrap_or_default();next_source.credit(&h,inferred)?;
         *total=next_total;sources.insert(h.source,next_source);
+        self.latest_combat_ns=self.latest_combat_ns.max(h.timestamp_ns);
         let history=if inferred { &mut self.inferred_hits } else { &mut self.raw_hits };
         let tags=if inferred{&mut self.inferred_encounters}else{&mut self.raw_encounters};
-        let assignment=HitAssignment(Arc::new(HitMembership{encounter:AtomicU64::new(0),skill:OnceLock::new(),boundary:self.combat_boundary}));
+        let assignment=HitAssignment(Arc::new(HitMembership{encounter:AtomicU64::new(0),skill:AtomicU64::new(0),boundary:self.combat_boundary}));
         let evicted=if history.len() == MAX_RAW_HITS { history.pop_front();self.evicted_hits += 1;tags.pop_front() }else{None};
         history.push_back(h.clone());tags.push_back(assignment.clone());self.revision+=1;
         if evicted.is_some_and(|a|a.encounter().is_none() && a.0.boundary==self.combat_boundary){
@@ -176,44 +267,70 @@ impl Meter {
             if inferred && h.timestamp_ns<self.backtrack_floor_ns {return Ok(());}
         }
         if self.encounters[&self.current].state == EncounterState::PendingReset {
-            if self.encounters.len() >= 32 { return Err("encounter archive capacity reached; export required".into()); }
+            self.make_archive_room();
             self.current += 1; self.encounters.insert(self.current,Encounter::new(self.current)); self.selected = None;self.viewing=None;self.target_query.clear();
         }
         if self.encounters[&self.current].state == EncounterState::Ended {
-            return Err("damage after end needs a verified new-run decision".into());
+            // Retain session credit without reopening an independently ended
+            // encounter. Encounter policy cannot reject accepted actor damage.
+            return Ok(());
         }
-        self.add_to_encounter(&h,inferred)?;
+        self.add_to_encounter(&h,inferred);
         assignment.0.encounter.store(self.current,Ordering::Relaxed);
         if self.automatic_encounters && [h.source,h.target].iter().any(|node|self.pending_nodes.get(node).is_some_and(|t|t.abs_diff(h.timestamp_ns)<self.idle_ns)) {
-            self.consolidate(&h)?;
+            self.consolidate(&h);
         }
         Ok(())
     }
-    fn add_to_encounter(&mut self,h:&Hit,inferred:bool)->Result<()> {
-        let encounter = self.encounters.get_mut(&self.current).unwrap();
-        let needed = [None,Some(h.target)].into_iter().filter(|k|
-            !encounter.views.get(k).is_some_and(|v| if inferred {v.estimates.contains_key(&h.source)} else {v.sources.contains_key(&h.source)})).count();
-        if self.cells+needed > MAX_CELLS { return Err("aggregate cell capacity reached".into()); }
-        let targets = encounter.views.len().saturating_sub(1);
-        if !encounter.views.contains_key(&Some(h.target)) && targets >= 4096 { return Err("target capacity reached".into()); }
-        if !encounter.views.get(&None).is_some_and(|v| v.sources.contains_key(&h.source))
-            && encounter.views.get(&None).map_or(0,|v| v.sources.len()) >= 16384 { return Err("source capacity reached".into()); }
-        // Work on copies before committing, so numeric overflow cannot partially update totals.
-        let mut updates = Vec::new();
+    fn encounter_cells(encounter:&Encounter)->usize {
+        encounter.views.values().map(|v|v.sources.len()+v.estimates.len()).sum()
+    }
+    fn evict_encounter(&mut self,id:u64) {
+        if let Some(e)=self.encounters.remove(&id) {self.cells-=Self::encounter_cells(&e);}
+        self.skills.retain(|(e,_,_,_,_),_|*e!=id);
+        if self.viewing==Some(id) {self.viewing=None;self.selected=None;self.target_query.clear();}
+        self.partial=true;
+    }
+    fn make_archive_room(&mut self) {
+        if self.encounters.len()>=32 {
+            let oldest=*self.encounters.keys().find(|id|**id!=self.current).expect("bounded archive has older encounter");
+            self.evict_encounter(oldest);
+        }
+    }
+    fn make_cell_room(&mut self,needed:usize) {
+        while self.cells+needed>MAX_CELLS {
+            if let Some(oldest)=self.encounters.keys().find(|id|**id!=self.current).copied() {
+                self.evict_encounter(oldest);
+            } else {
+                let key=self.encounters[&self.current].views.keys().find(|k|k.is_some()).copied()
+                    .expect("all-target actor cells fit the bounded actor universe");
+                let v=self.encounters.get_mut(&self.current).unwrap().views.remove(&key).unwrap();
+                self.cells-=v.sources.len()+v.estimates.len();
+                self.skills.retain(|(e,_,target,_,_),_|*e!=self.current || Some(*target)!=key);
+                if self.selected==key {self.selected=None;}
+                self.partial=true;
+            }
+        }
+    }
+    fn add_to_encounter(&mut self,h:&Hit,inferred:bool) {
+        // Reserve the authoritative current all-target actor cell first.
+        // Reclaim only derived archived/target detail under aggregate pressure.
         for k in [None,Some(h.target)] {
-            let v = encounter.views.get(&k);
-            let mut total = v.map_or_else(Aggregate::default,|v| if inferred {v.estimated_total.clone()} else {v.total.clone()}); total.add(&h)?;
-            let mut source = v.and_then(|v| if inferred {v.estimates.get(&h.source)} else {v.sources.get(&h.source)}).cloned().unwrap_or_default(); source.add(&h)?;
-            if inferred{total.hits-=1;source.hits-=1;total.allocations+=1;source.allocations+=1;}
-            updates.push((k,total,source));
+            let e=&self.encounters[&self.current];
+            if k.is_some() && !e.views.contains_key(&k) && e.views.len().saturating_sub(1)>=4096 {
+                self.partial=true;continue;
+            }
+            let needed=usize::from(!e.views.get(&k).is_some_and(|v|if inferred {v.estimates.contains_key(&h.source)}else{v.sources.contains_key(&h.source)}));
+            self.make_cell_room(needed);
+            let e=self.encounters.get_mut(&self.current).unwrap();
+            // Room-making can evict the selected target view, so inspect again.
+            let v=e.views.entry(k).or_default();
+            let (total,sources)=if inferred {(&mut v.estimated_total,&mut v.estimates)}else{(&mut v.total,&mut v.sources)};
+            let needed=usize::from(!sources.contains_key(&h.source));
+            total.credit(h,inferred).expect("encounter total is a subset of checked session credit");
+            sources.entry(h.source).or_default().credit(h,inferred).expect("encounter actor is a subset of checked session credit");
+            self.cells+=needed;e.state=EncounterState::Active;
         }
-        for (k,total,source) in updates {
-            let view = encounter.views.entry(k).or_default();
-            if inferred { view.estimated_total=total;view.estimates.insert(h.source,source); }
-            else { view.total=total;view.sources.insert(h.source,source); }
-        }
-        self.cells += needed; encounter.state = EncounterState::Active;
-        Ok(())
     }
     fn rebuild_pending_nodes(&mut self) {
         self.pending_nodes.clear();
@@ -223,22 +340,27 @@ impl Meter {
             }
         }
     }
-    fn consolidate(&mut self,joining:&Hit)->Result<()> {
+    fn consolidate(&mut self,joining:&Hit) {
         let hits=self.raw_hits.iter().zip(&self.raw_encounters).map(|(h,a)|(h,a,false))
             .chain(self.inferred_hits.iter().zip(&self.inferred_encounters).map(|(h,a)|(h,a,true)))
             .filter(|(h,a,_)|a.encounter().is_none() && a.0.boundary==self.combat_boundary && h.timestamp_ns>=self.backtrack_floor_ns).collect();
         for (h,a,inferred) in live_tracks::connected(hits,joining,self.idle_ns) {
-            self.add_to_encounter(&h,inferred)?;
-            if let Some(skill)=a.0.skill.get() {
-                self.attribute_skill(&h,self.current,*skill,inferred)?;
-                let key=(0,h.source,h.target,*skill,inferred);
-                let amount=self.skills.get_mut(&key).expect("pending skill conservation");
-                *amount=amount.checked_sub(h.damage.amount as u128).expect("pending skill conservation");
-                if *amount==0{self.skills.remove(&key);}
+            self.add_to_encounter(&h,inferred);
+            if let Some(skill)=a.recorded_skill() {
+                // Compaction may have coalesced this pending hit's exact
+                // ability/target key. Transfer from either representation.
+                let exact=(0,h.source,h.target,skill,inferred);
+                let unknown=(0,h.source,Self::unknown_skill_target(),None,inferred);
+                let old=if self.skills.contains_key(&exact){exact}else{unknown};
+                if let Some(amount)=self.skills.get_mut(&old) {
+                    *amount=amount.checked_sub(h.damage.amount as u128).expect("pending skill conservation");
+                    if *amount==0 {self.skills.remove(&old);}
+                }
+                self.attribute_skill(&h,self.current,skill,inferred).expect("derived skill credit is infallible");
             }
             a.0.encounter.store(self.current,Ordering::Relaxed);
         }
-        self.rebuild_pending_nodes();Ok(())
+        self.rebuild_pending_nodes();
     }
     fn partition_live_tracks(&mut self) {
         self.combat_boundary+=1;self.pending_nodes.clear();self.backtrack_floor_ns=self.latest_combat_ns;
@@ -327,6 +449,19 @@ impl Meter {
                 if *inferred{row.1+=amount;}else{row.0+=amount;}
             }
         }
+        // Actor totals remain authoritative when target/ability detail was
+        // compacted, archived, or awaits delayed skill evidence.
+        if let Some(view)=self.encounters.get(&encounter).and_then(|e|e.views.get(&self.selected)) {
+            let mut totals:BTreeMap<EntityKey,(u128,u128)>=BTreeMap::new();
+            for (source,a) in &view.sources {totals.entry(self.registry.owner_group(*source)).or_default().0+=a.damage;}
+            for (source,a) in &view.estimates {totals.entry(self.registry.owner_group(*source)).or_default().1+=a.damage;}
+            for (owner,(explicit,estimated)) in totals {
+                let rows=groups.entry(owner).or_default();
+                let known=rows.values().fold((0u128,0u128),|(a,b),(x,y)|(a+x,b+y));
+                let missing=(explicit.saturating_sub(known.0),estimated.saturating_sub(known.1));
+                if missing!=(0,0) {let unknown=rows.entry(None).or_default();unknown.0+=missing.0;unknown.1+=missing.1;}
+            }
+        }
         groups.into_iter().map(|(owner,rows)|(owner,rows.into_iter().map(|(id,(explicit,estimated))|SkillRow{id,label:id.map_or_else(||"Unknown skill".into(),|id|self.skill_names.get(&id).filter(|names|names.len()==1).and_then(|names|names.first()).cloned().unwrap_or_else(||format!("Skill {id}"))),explicit,estimated}).collect())).collect()
     }
     fn chart(&self,summary:&Aggregate)->Vec<(f64,f64,f64)> {
@@ -370,18 +505,23 @@ impl Meter {
                     else{self.idle_ns=seconds*1_000_000_000;Ok(())}
                 }
                 Action::Reset => {
-                    if self.encounters.len()>=32 {Err("encounter archive capacity reached; export required".into())}
-                    else {
-                        self.partition_live_tracks();
-                        self.encounters.get_mut(&self.current).unwrap().state=EncounterState::Ended;
-                        self.current+=1;self.encounters.insert(self.current,Encounter::new(self.current));
-                        self.viewing=None;self.selected=None;self.target_query.clear();self.last_self_activity=None;
-                        Ok(())
-                    }
+                    self.make_archive_room();
+                    self.partition_live_tracks();
+                    self.encounters.get_mut(&self.current).unwrap().state=EncounterState::Ended;
+                    self.current+=1;self.encounters.insert(self.current,Encounter::new(self.current));
+                    self.viewing=None;self.selected=None;self.target_query.clear();self.last_self_activity=None;
+                    Ok(())
                 }
             }}
         };
         if result.is_ok() { self.last_command = c.id; self.revision += 1; }
         Ack { id: c.id,applied: result.is_ok(),reason: result.err(),snapshot: self.snapshot(),persistence:None }
+    }
+    /// Read-only preflight so a valid manual partition can first publish the
+    /// old boundary's packet assignments. Rejected commands have no such effect.
+    pub fn reset_command_ready(&self,c:&Command)->bool{
+        matches!(c.action,Action::Reset) && c.id>self.last_seen_command
+            && c.encounter==self.viewing.unwrap_or(self.current)
+            && c.observed_revision<=self.revision
     }
 }

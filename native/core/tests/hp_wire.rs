@@ -42,23 +42,23 @@ fn candidates_precede_opcode_entity_and_numeric_filters_and_decoys_do_not_become
     assert_eq!(r.hp_evidence.counts["extended scalar candidate"],1);
     let c=&r.hp_evidence.candidates;
     assert_eq!(c[0].outcome,"unconfirmed packet role");
-    assert!(c[1].outcome.contains("registry domain"));assert!(c[2].outcome.contains("OutOfRange"));
+    assert!(c[1].outcome.contains("numeric"));assert!(c[2].outcome.contains("OutOfRange"));
     assert!(c[3].outcome.contains("unsupported HP envelope"));
-    assert!(r.hp_evidence.observations.is_empty());assert_eq!(r.health.loss,0);
+    assert_eq!(r.hp_evidence.observations.len(),1);assert_eq!(r.health.loss,0);assert_eq!(r.numeric.detected,0);
     assert!(r.meter.registry.records.is_empty());
 }
 #[test]
-fn max_sentinel_breaks_the_baseline_without_manufacturing_damage(){
+fn max_sentinel_preserves_finite_endpoint_damage_without_sentinel_arithmetic(){
     let mut r=Replay::new(true);let mut seq=1;
     for (i,hp) in [100,i64::MAX as u64,0,0].into_iter().enumerate(){r.feed(segment(&mut seq,170205,&update(9,hp),i as u64+1)).unwrap();}
-    r.finish();assert_eq!(r.health.loss,0);
+    r.finish();assert_eq!(r.health.loss,100);assert_eq!(r.health.unassigned,100);assert_eq!(r.health.attribution.owed_amount(),0);
     assert_eq!(r.hp_evidence.comparisons["MAX sentinel"],1);
     assert_eq!(r.hp_evidence.comparisons["initial observation"],2);
     assert_eq!(r.hp_evidence.comparisons["unchanged"],1);
     assert!(r.hp_evidence.observations[2].previous.is_none());
 }
 #[test]
-fn opaque_body_retains_audit_comparison_but_cannot_credit_across_it(){
+fn opaque_body_retains_audit_comparison_and_numeric_obligation(){
     let mut r=Replay::new(true);let mut seq=1;
     r.feed(segment(&mut seq,170205,&update(9,100),1)).unwrap();
     let mut opaque=protocol::encode_frame(21231,&[255;3]);opaque[8]=1;
@@ -66,8 +66,8 @@ fn opaque_body_retains_audit_comparison_but_cannot_credit_across_it(){
     r.feed(Input::Segment(Segment{flow:Flow{src:"server".into(),sport:16000,dst:"client".into(),dport:3},timestamp_ns:2,seq:start,payload:opaque,syn:false,fin:false,rst:false,ack:true})).unwrap();
     r.feed(segment(&mut seq,170205,&update(9,50),3)).unwrap();r.finish();
     assert_eq!(r.hp_evidence.counts["opaque body"],1);
-    let last=r.hp_evidence.observations.back().unwrap();assert_eq!(last.comparison,"gap comparison; audit only");
-    assert_eq!(last.previous.unwrap().1-last.hp,50);assert_eq!(r.health.loss,0);
+    let last=r.hp_evidence.observations.back().unwrap();assert_eq!(last.comparison,"gap comparison; canonical numeric decides credit");
+    assert_eq!(last.previous.unwrap().1-last.hp,50);assert_eq!(r.health.loss,50);assert_eq!(r.health.unassigned,50);assert_eq!(r.health.attribution.owed_amount(),0);
 }
 #[test]
 fn bounded_candidate_history_counts_evictions_without_losing_acknowledgment_totals(){

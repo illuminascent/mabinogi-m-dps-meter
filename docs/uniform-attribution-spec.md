@@ -1,0 +1,123 @@
+# Uniform packet attribution contract
+
+2026-11-08. Current contract, superseding forced roster expansion and mandatory
+publication without an eligible attacker. GitHub release remains blocked.
+
+## Scope and invariants
+
+Packet interpretation precedes owner, encounter and ability grouping. Every actor
+uses the same rules. There is one allocation/fallback implementation. Detected
+finite amounts retain an accounting disposition: published, queued, known-source
+delivery debt, or explicitly unattributed. The user permits attribution failure
+when no eligible active attacker exists. Mere presence is never activity.
+
+The game has no friendly fire. Identical source/victim and confirmed player-side
+pairs, including player-owned pets, cannot receive damage attribution. Apply the
+shared predicate to explicit claims, typed HP candidates, retained activity,
+orphan claims, training, retries and meter publication. Registry is authoritative;
+bounded side-cache eviction cannot override its known identities. Generic NPC
+type does not prove faction or hostility; unknown affiliation remains uncertain.
+An owned-entity/pet profile also does not prove faction: its nonconflicting owner
+must be confirmed Player before it inherits that side. Withdrawn/conflicting
+ownership revokes the cached side, including actors outside the roster sample.
+An explicit contradictory source claim stays in raw diagnostics, with a side
+conflict disposition; it cannot consume HP overlap or train the model.
+
+The town rooster periodically attacks players without attack notifications.
+Those HP drops are real incoming damage. A cold model rejection is a coverage
+loss, not proof the numeric observation was false. No town exclusion, new HP
+filter, hot/warm multiplier or extra activity timeout follows from this example.
+
+## Ownership seams
+
+1. Wire adapters/surveys retain original fields before enrichment. MAX sentinels
+   have a nonnumeric disposition; finite amounts do not inherit magnitude or
+   self/teammate preference gates from a legacy adapter.
+2. Numeric owns canonical same-object HP comparison. Its key retains original
+   wire target, process, binding and incarnation. Gaps, opaque messages and IV
+   refresh do not erase finite endpoints; uncertainty is retained. Initial
+   explicitly establishes a baseline. Duplicate parallel observations are
+   nonadditive; unique lower endpoints remain eligible. Proven replacement
+   retires the matching comparison. Bounded baseline eviction limits future
+   comparisons, never erases an already detected amount.
+3. Health owns target-local association and raw/net reconciliation. It preserves
+   bounded orphan claims. Checked raw-minus-auxiliary remains a scoped impact
+   candidate; unsupported arithmetic uses labeled uncertain overlap. Forbidden
+   facts are removed before reconciliation/training, including when identity
+   proof arrives later while the budget remains pending. Only clean independent
+   anchors train the existing constrained actor/ability/component/target model.
+   Estimates, conflicts and uncertain gap/batch evidence are not training truth.
+4. Attribution owns sole allocation/fallback, actual attack history, bounded
+   known-source delivery debt, immutable leases and acknowledgments. Strong
+   current packet support is used first; otherwise eligible recent attackers
+   of the same target are considered. No eligible support records an unattributed
+   outcome. Later appearances or unrelated future attacks cannot settle it.
+5. Replay feeds exact Registry-backed pair roles, revalidates stored facts when
+   identity changes, and is the only production credit consumer. It freezes
+   prepared skill, commits Meter, then ACKs. Capacity alternatives must intersect
+   eligible active support and admitted meter sources. Empty alternatives are
+   counted delivery-capacity failures. Arithmetic rejection retains the lease.
+   Already committed receipts ACK idempotently before any attempted reselection.
+6. Meter rejects known forbidden pairs before mutation and atomically credits
+   actor amounts. Derived detail pressure cannot partially reject actor credit.
+   Raw credit publishes with Unknown ability when needed; bounded later ability
+   refinement changes metadata without republishing damage. Boundaries drain
+   both outbox and known-source debt, or retain the old measurement boundary.
+
+Conservation is detected explicit + inferred residual = published + queued +
+known-source owed + unattributed. Both origins and unattributed reasons are
+checked separately. Canonical HP independently reconciles to matched eligible
+explicit impact + inferred + unattributed. Raw explicit amount is not asserted
+to equal physical HP impact. Conservation alone does not prove actor accuracy.
+
+## Activity and bounds
+
+Activity is established by actual attack or eligible finite explicit records.
+Appearance, name, HP and presence observations never refresh it. Warm history
+uses only Meter.idle_ns, the existing idle-split setting and shared default.
+At timeout equality the actor is cold. Eligibility is evaluated at the HP
+observation's capture time, not decoder/UI wall time. A transport gap alone is
+not inactivity. Entity process/binding/incarnation and target scope remain.
+
+Compact first/last continuous activity spans preserve earlier eligible attacks
+when later same-pair packets arrive before a budget resolves. Spans merge only
+across gaps shorter than the configured idle timeout. Changing the setting
+cannot reinterpret a span merged under a different timeout as new evidence.
+Current typed packet association remains separate from this recent-activity
+fallback; there are no hot/warm share multipliers.
+
+No disk spill/index or all-history packet retrieval is used. Association policy
+remains 250 ms input-release capture-watermark retention and 100 ms local capture
+association. These are empirical engineering policies, not activity thresholds
+or server causality axioms. Three seconds was not accepted. Upstream ownership
+holdback and UI publication are separate latency factors.
+
+Numeric retains 1,024 baselines. Health retains 1,024 slots, 1,024 pending budgets
+(64 per target), 4,096 facts(128 per target), 256 orphan claims and bounded audit/
+preview/scratch. Attribution retains 512 side records, 1,024 activity relationships,
+1,024 outbox rows and 1,024 known-source delivery rows, 16 frame references per credit.
+Existing bounded Combat/Timeline/model and 512 pending ability refinements remain.
+Pressure may coarsen target/time/ability/flags/hit count, retaining source and
+origin in delivery debt. A final storage-capacity failure has a separate counted
+amount; it is never mislabeled cold and never assigns an arbitrary bystander.
+
+Storage is O(S+G+B+A+bounded dependencies). Target association costs
+O(PF+F²+F log F); resolving all target budgets can cost O(P²F+PF²).
+Fallback scans/sorts bounded support. Activity lookup is bounded by 1,024 pairs.
+Registry-revision revalidation scans bounded facts/relationships before training.
+Publication processes at most 1,024 leases per invocation; boundary draining is
+bounded and cannot switch membership while delivery remains pending. Report
+actual service measurements and conservative allocation bounds below 10 MiB.
+
+## Validation
+
+Test all direct/modeled/fallback/retry/pressure paths, player/pet combinations,
+raw conflict without HP overlap/training, later identity and cache eviction,
+idle boundary/config changes, appearance-only cold state, gaps, later-attack
+overwrite, immutable receipts and full-outbox reset. Replay all 14 original inputs,
+world snapshot and completed town recording with original hashes/frame/raw-field
+counts. Preserve true numeric HP denominator and report unattributed causes.
+Build Windows app, system check without capture, demo, UI smoke and app replay;
+update only dist/mabi-meter.exe. No release, commit, push or live capture follows
+from local validation. Unknown affiliations and bounded-history accuracy remain
+limitations; no assertion of universal packet completeness or teammate accuracy.

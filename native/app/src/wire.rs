@@ -2,6 +2,9 @@
 use mabi_meter_core::{Result,transport::{Flow,Segment}};
 use std::{net::{IpAddr,Ipv4Addr,Ipv6Addr},collections::{BTreeMap,VecDeque}};
 pub const MAX:usize=256*1024;
+/// Existing process/socket-ownership discovery holdback. This precedes packet
+/// decoding and is separate from the causal assigner's evidence retention.
+pub const OWNERSHIP_HOLDBACK_MS:u64=1250;
 pub fn envelope(sequence:u64,kind:u8,data:&[u8])->Result<Vec<u8>> {
     if data.len()+10>MAX{return Err("IPC message exceeds limit".into());}
     let mut out=vec![1,kind];out.extend_from_slice(&sequence.to_le_bytes());out.extend_from_slice(data);Ok(out)
@@ -61,7 +64,7 @@ impl OwnershipBuffer {
         let generation=self.generations.get(&key).copied().unwrap_or(0);self.pending.push_back((now,key,generation,s));self.bytes+=cost;
     }
     pub fn drain(&mut self,now:u64,force:bool)->Vec<Segment> {
-        let mut records=Vec::new();while self.pending.front().is_some_and(|p|force||now.saturating_sub(p.0)>=1250) {
+        let mut records=Vec::new();while self.pending.front().is_some_and(|p|force||now.saturating_sub(p.0)>=OWNERSHIP_HOLDBACK_MS) {
             let (_,key,generation,s)=self.pending.pop_front().unwrap();self.bytes-=s.payload.len()+256;
             if self.approved.get(&key).is_some_and(|(g,expiry)|*g==generation && *expiry>=now){records.push(s);}else{self.unowned+=1;}
         }records

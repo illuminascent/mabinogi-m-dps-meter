@@ -1,8 +1,11 @@
 # Mabinogi Mobile DPS meter
 
 Latest release: [v0.2.1](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.1).
-This release improves HP parsing and evidence retention. The credit-assignment
-and timing redesign remains pending.
+That release contains HP parsing and evidence retention. Current source is
+**0.2.2**, with bounded packet-level credit assignment, shared no-friendly-fire
+eligibility and idle-based fallback. **0.2.2 is not published; release remains
+blocked.** See the [Rust code guide](native/README.md) and
+[attribution contract](docs/uniform-attribution-spec.md).
 
 A standalone Rust DPS meter for the Japanese Windows client. It passively reads
 game-owned TCP traffic through Windows Packet Monitor and displays each
@@ -29,6 +32,8 @@ beside the EXE for raw game TCP records, audits, metadata, and window settings.
   and self attribution. It does not stop capture or reset packet warmup.
 - Encounters end after 15 seconds without self combat by default. The timeout
   is editable. Close the window to stop capture; a session is capped at one hour.
+  This setting also controls how long a recent attacker remains eligible for
+  estimated damage. Presence and appearance messages do not refresh activity.
 - Joining an active fight pulls in retained earlier combat connected to the
   joined actor or target: target to attackers, then attackers to other targets,
   recursively. The encounter starts at that graph's earliest retained damage.
@@ -61,8 +66,9 @@ lifetimes; delayed old identity records cannot replace a newer incarnation.
 
 After a TCP hole, the decoder retains complete later buffered messages and
 reacquires framing after the bounded wait. The missing bytes still mark coverage
-partial, and HP/action matching never crosses the hole. This can recover damage
-records that older builds discarded along with the buffered suffix.
+partial. Direct packet associations respect transport continuity; finite HP
+endpoints for the same actor can still supply an uncertain net decrease across
+the gap. This can recover observations older builds discarded with the suffix.
 
 Observed pets are grouped with their evidenced owner while their original actor
 references and separate contributions remain in the audit. Right-click a source
@@ -70,15 +76,31 @@ row to see its pet contribution and skill breakdown, with explicit and estimated
 amounts separated. Unrecognized skill IDs retain their amounts; internal action
 names are used when observed, otherwise the numeric ID is shown.
 
-HP estimation accounts for explicit contributions before allocating a residual.
-After stronger source matching, unresolved non-self loss is equally shared among
-distinct immediate attackers, with deterministic integer rounding. Activity is
-limited to eight messages in that TCP direction and 32 ms; a separate 200 ms wait
-allows delayed evidence without extending activity. Loss without eligible
-candidates remains unassigned. Allocations do not increase observed hit or
-critical counts. Audit v4 records the decisions, unassigned amounts, ownership,
-participant bindings, identity transitions, skill evidence and partial clock bounds; clock bounds are
-not exact HP timestamps.
+HP estimation reconciles eligible explicit impact before allocating the residual.
+The observed raw amount and checked raw-minus-auxiliary HP impact are retained as
+different quantities. All actors use the same packet-level analysis before owner,
+encounter or skill grouping. A bounded shared actor/ability/component model
+weights ambiguous allocations; estimated allocations never train that model.
+
+All attribution paths reject identical source/victim and confirmed friendly
+player-side pairs. Owned entities inherit that side only from a nonconflicting,
+confirmed player owner; an NPC or pet profile alone does not prove affiliation.
+Contradictory raw claims remain visible in diagnostics and cannot consume HP
+overlap or train the model.
+
+When stronger packet association is unavailable, the single fallback considers
+eligible recent attackers of that target within the configured idle timeout.
+It does not distribute damage among visible bystanders. No eligible attacker
+leaves an explicitly unattributed amount. Missing attack records do not prove HP
+loss false: some town NPC attacks cause real incoming damage without those
+records. Allocations do not increase observed hit or critical counts.
+
+Audit v5 records numeric observations, actor allocations, unattributed causes,
+publication receipts, ownership, skills and partial clock bounds. Pending
+known-source delivery survives consumer rejection; reset drains it before
+changing the measurement. Assignment uses bounded RAM with no disk spill or
+historical packet index. The conservative inference-storage ceiling is below
+10 MiB; independent recordings and accumulated meter results are separate.
 
 HP evidence is acknowledged before opcode, actor and key checks. Every framed
 body receives a structural classification; HP-shaped candidates retain a bounded
@@ -90,24 +112,29 @@ The JP common actor-status prefix supplies plain or protected HP and IV metadata
 Updates share one length-prefixed scalar envelope across the six observed types.
 Uninterpreted status fields and the update trailer are retained without value
 gates. Actor generations, bounds, padding and numeric checks still apply before
-HP accounting. MAX sentinels break the arithmetic baseline. Numeric comparisons
-across continuity breaks remain audit-only; they do not add damage. Keys retained
+HP accounting. MAX sentinels do not participate in arithmetic and preserve the
+last finite comparison. Numeric decreases across continuity breaks remain
+eligible with uncertainty. Keys retained
 after gaps, and IVs declared only by plain status, carry conditional provenance.
 CBC padding does not authenticate a value. Decoding HP does not independently
 verify the source attribution of every teammate amount.
 
-If semantic decoding fails, the meter pauses decoding and continues raw recording.
-The status and saved metadata report that pause so the recording can be replayed.
+Recoverable metadata errors degrade detail without abandoning later damage in
+the same extracted batch. A fatal decoder failure pauses semantic processing
+while raw recording continues. The status and saved metadata report that pause;
+already detected pending credit remains owned for delivery.
 
 Timeline evidence is partial. The decoder retains embedded clock candidates,
 unwraps counters within a compatible TCP direction, and separates apparent clock
 resets into epochs. Clock-bearing messages before and after an observation form
-provisional packet-order brackets. Complete brackets can reject incompatible
-associations; incomplete brackets leave timing unknown. Death-event timestamp
-and effect-instance creation-time candidates remain supporting evidence. HP
-matching still primarily uses the capture-time and message-order window above.
-The clock constraints have not yet demonstrated improved attribution, and a
-verified reconstruction of server combat timing remains future work.
+provisional packet-order brackets. Incomplete brackets leave timing unknown;
+counter resets and bracket disagreements label uncertainty and exclude model
+training rather than discard HP budgets. Death-event timestamp and effect-instance
+creation-time candidates remain supporting evidence. Local association uses
+100 ms of original capture time and a 250 ms input-release watermark wait. These
+engineering policies are separate from the idle activity timeout and are not
+verified physical server-time bounds. Full server timing reconstruction and
+independent teammate accuracy remain open.
 
 ## Build
 
@@ -230,7 +257,7 @@ The files contain private game traffic and remain ignored by Git.
 | Path | Purpose |
 | --- | --- |
 | `native/app` | Frameless Win32 UI, process discovery, authenticated worker IPC, embedded icon |
-| `native/core` | TCP reassembly, bounded decoding, identity, encounters, totals, replay, tests |
+| `native/core` | TCP reassembly, bounded decoding, identity, packet attribution, encounters, totals and replay |
 | `native/core/data` | Embedded JP protocol lookup map |
 | `native/capture` | Our Packet Monitor library, linked directly into the Rust EXE |
 | `src/mabi_dps` | Python ctypes capture DLL wrapper |
@@ -244,3 +271,5 @@ Docker). They remain ignored by default. Public synthetic tests need no
 reference distribution.
 Reference binaries, extracted UI artwork, recordings, research notes, prototype
 artifacts and compiled outputs are excluded from this repository.
+The current attribution contract and repository agent instructions are tracked;
+historical research and private replay evidence remain local.

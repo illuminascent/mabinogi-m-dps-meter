@@ -54,7 +54,7 @@ fn feed(r:&mut Replay,seq:&mut u32,port:u16,wire:i32,p:&[u8],t:u64){let payload=
     let mut hp=vec![0;21];put64(&mut hp,0,99);put32(&mut hp,8,8);put64(&mut hp,12,200);feed(&mut r,&mut seq,10,170205,&hp,3);
     let mut attack=vec![0;35];put32(&mut attack,0,50);put32(&mut attack,8,99);feed(&mut r,&mut seq,10,20526,&attack,4);
     feed(&mut r,&mut seq,10,20590,&personal(3,uid,128),5);let new=r.meter.registry.self_key.unwrap();
-    put64(&mut hp,12,190);feed(&mut r,&mut seq,10,170205,&hp,6);r.finish();assert_eq!(r.health.loss,0);
+    put64(&mut hp,12,190);feed(&mut r,&mut seq,10,170205,&hp,6);r.finish();assert_eq!(r.health.loss,10);assert_eq!(r.health.unassigned,0);
     assert_eq!(new.actor,3);assert!(!r.meter.registry.is_current(old));assert_eq!(r.meter.registry.participant(new),id);
     assert!(r.meter.registry.label(new).starts_with("Self"));assert_eq!(r.meter.registry.remembered_players(),1);
 }
@@ -263,7 +263,7 @@ fn recovered_old_personal_state_cannot_reactivate_a_superseded_actor(){
     r.internal_transition(100).unwrap();assert_eq!(r.meter.registry.self_key,Some(key));assert!(r.meter.registry.is_current(key));
     put64(&mut hp,12,90);feed(&mut r,&mut seq,10,170205,&hp,0);r.internal_transition(100).unwrap();
     put64(&mut hp,12,80);feed(&mut r,&mut seq,10,170205,&hp,0);feed(&mut r,&mut seq,10,20526,&a,0);r.finish();
-    assert_eq!(r.health.loss,10);assert_eq!(r.meter.session.estimated_total.damage,10);assert_eq!(r.meter.binding,1);
+    assert_eq!(r.health.loss,20);assert_eq!(r.meter.session.estimated_total.damage,20);assert_eq!(r.meter.binding,1);
 }
 #[test] fn changed_actor_in_same_socket_needs_a_verified_room_boundary_and_stable_identity(){
     let mut m=Meter::default();let c=char_id(0x0012_3456_0001);let old=m.registry.observe(1,1,50).unwrap();

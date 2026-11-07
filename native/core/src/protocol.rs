@@ -78,13 +78,14 @@ pub struct Damage {
     pub flags: [bool; 5], pub raw_flags: [u8; 7],
 }
 pub fn damage(p: &[u8]) -> Result<Damage> {
-    if p.len() < 53 { return Err("short damage payload".into()); }
-    let (actor, target, amount) = (u32le(p, 0), u32le(p, 8), u64le(p, 16));
-    if actor == 0 || target == 0 || actor == target || amount > 1_000_000_000_000 {
+    let fields=crate::damage_wire::Fields::parse(p)?;
+    let (actor,target,amount)=(fields.source_prefix as u32,fields.target_prefix as u32,fields.raw_amount);
+    if !fields.legacy_supported() {
         return Err("damage sanity check".into());
     }
-    Ok(Damage { actor, target, amount, flags: [p[32]&1 != 0, p[33]&2 != 0,
-        p[33]&4 != 0, p[35]&8 != 0, p[36]&16 != 0], raw_flags: p[32..39].try_into().unwrap() })
+    let flags=fields.raw_flags;
+    Ok(Damage { actor, target, amount, flags: [flags[0]&1 != 0, flags[1]&2 != 0,
+        flags[1]&4 != 0, flags[3]&8 != 0, flags[4]&16 != 0], raw_flags:flags })
 }
 
 #[derive(Debug)]

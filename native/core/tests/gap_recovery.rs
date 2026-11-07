@@ -47,13 +47,13 @@ fn anchored(n:u64)->Vec<u8>{let mut p=protocol::encode_frame(20132,&[]);p.extend
     let fs=s.feed(&segment(1010,p[10..30].to_vec(),2),&mut d).unwrap();
     assert_eq!(fs[0].timestamp_ns,Some(2));assert!(!fs[0].gap_before);
 }
-#[test] fn hp_matching_cannot_cross_a_recovered_hole_even_at_the_same_capture_time(){
+#[test] fn recovered_hole_preserves_damage_without_claiming_exact_packet_matching(){
     let mut r=Replay::new(true);let mut hp=vec![0;21];hp[..8].copy_from_slice(&2u64.to_le_bytes());hp[8..12].copy_from_slice(&8u32.to_le_bytes());hp[12..20].copy_from_slice(&100u64.to_le_bytes());
     let mut first=protocol::encode_frame(170205,&hp);let mut a=vec![0;35];a[..4].copy_from_slice(&1u32.to_le_bytes());a[8..12].copy_from_slice(&2u32.to_le_bytes());first.extend(protocol::encode_frame(20526,&a));
     let n=first.len() as u32;r.feed(Input::Segment(segment(1000,first,0))).unwrap();
     hp[12..20].copy_from_slice(&90u64.to_le_bytes());let mut suffix=protocol::encode_frame(20132,&[]);suffix.extend(protocol::encode_frame(170205,&hp));
     r.feed(Input::Segment(segment(1010+n,suffix,0))).unwrap();r.feed(Input::Segment(segment(1010+n,vec![],3_000_000_001))).unwrap();r.finish();
-    assert_eq!(r.meter.session.estimated_total.damage,0);assert_eq!(r.health.loss,0);assert!(r.diagnostics.partial());
+    assert_eq!(r.meter.session.estimated_total.damage,10);assert_eq!(r.health.loss,10);assert_eq!(r.health.unassigned,0);assert!(r.diagnostics.partial());
     let frames:Vec<_>=r.frame_history.iter().collect();assert_ne!(frames[0].at.continuity,frames.last().unwrap().at.continuity);
     assert_eq!(frames.last().unwrap().timestamp_ns,0);
 }

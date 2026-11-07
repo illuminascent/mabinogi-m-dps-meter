@@ -35,22 +35,24 @@ fn replay_gap_preserves_iv_without_using_prior_hp_and_process_replacement_clears
     feed(&mut r,&mut seq,2,170206,&zero);feed(&mut r,&mut seq,3,20526,&attack());
     r.feed(Input::Loss{code:"synthetic_loss".into(),reset:false}).unwrap();
     assert_eq!(r.protected_hp.key_count(),1);
-    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(111,111,0));
+    // The completed pre-gap loss keeps its packet-supported credit. The next
+    // baseline still cannot bridge missing bytes or a replacement key.
+    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(111,0,111));
     feed(&mut r,&mut seq,4,170207,&full); // Reacquire baseline using retained IV.
     feed(&mut r,&mut seq,5,170208,&zero);feed(&mut r,&mut seq,6,20526,&attack());
     r.tick(300_000_000).unwrap();
-    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(222,111,111));
-    assert_eq!(r.meter.session.estimated_total.damage,111);
+    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(222,0,222));
+    assert_eq!(r.meter.session.estimated_total.damage,222);
     assert_eq!(r.protected_hp_samples.len(),3);
     r.process_replacement(99).unwrap();assert_eq!(r.protected_hp.key_count(),0);
     feed(&mut r,&mut seq,400_000_000,170209,&full);
     assert_eq!(r.diagnostics.0["protected_hp_missing_iv"],1);
     assert_eq!(r.protected_hp_samples.len(),3);
-    assert_eq!(r.health.allocated,111);
+    assert_eq!(r.health.allocated,222);
 }
 
 #[test]
-fn replay_changed_iv_and_corrupt_scalar_do_not_bridge_hp_intervals(){
+fn changed_iv_and_corrupt_scalar_preserve_finite_numeric_damage(){
     use mabi_meter_core::replay::Replay;
     let mut r=Replay::new(true);r.live_scope=true;let mut seq=1;
     let initial=synthetic_spawn("c71938e787b6c816204a2c56c78a251d",0);
@@ -60,18 +62,18 @@ fn replay_changed_iv_and_corrupt_scalar_do_not_bridge_hp_intervals(){
     let changed=synthetic_spawn("220f68c39be88115862c958caffe0ba6",16);
     feed(&mut r,&mut seq,5,20051,&changed);
     assert_eq!(r.protected_hp_seeds.iter().map(|(_,_,_,_,changed)|*changed).collect::<Vec<_>>(),vec![true,false,true]);
-    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(111,111,0));
+    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(111,0,111));
     let four_hundred=synthetic_update("17a59de74d8dc87c118489480568e584");
     feed(&mut r,&mut seq,6,170208,&four_hundred);feed(&mut r,&mut seq,7,20526,&attack());
     let corrupt=synthetic_update("ce26dc2e00f7d307005dbdb02888da2d");
     feed(&mut r,&mut seq,8,170209,&corrupt);
-    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(211,211,0));
+    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(211,0,211));
     assert_eq!(r.diagnostics.0["protected_hp_rejected"],1);
     let fresh_zero=synthetic_update("de94339b5f5a44f7c99bad5f957c9460");
     feed(&mut r,&mut seq,9,170210,&fresh_zero);feed(&mut r,&mut seq,10,20526,&attack());
     r.tick(300_000_000).unwrap();
-    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(211,211,0));
-    assert_eq!(r.meter.session.estimated_total.damage,0);
+    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(611,0,611));
+    assert_eq!(r.meter.session.estimated_total.damage,611);
     assert_eq!(r.protected_hp.key_count(),1); // Corruption invalidates timing, not an otherwise known IV.
 }
 
@@ -85,14 +87,14 @@ fn replay_malformed_update_closes_pending_loss_and_requires_a_new_baseline(){
     feed(&mut r,&mut seq,2,170206,&zero);feed(&mut r,&mut seq,3,20526,&attack());
     let mut malformed=zero.clone();malformed[8]=15;
     feed(&mut r,&mut seq,4,170207,&malformed);
-    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(111,111,0));
+    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(111,0,111));
     assert_eq!(r.protected_hp.key_count(),1);
     let full=synthetic_update("c71938e787b6c816204a2c56c78a251d");
     feed(&mut r,&mut seq,5,170208,&full);
     feed(&mut r,&mut seq,6,170209,&zero);feed(&mut r,&mut seq,7,20526,&attack());
     r.tick(300_000_000).unwrap();
-    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(222,111,111));
-    assert_eq!(r.meter.session.estimated_total.damage,111);
+    assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(222,0,222));
+    assert_eq!(r.meter.session.estimated_total.damage,222);
 }
 
 #[test]
@@ -107,7 +109,7 @@ fn replay_rejected_seed_discards_prior_iv_for_both_known_and_untrusted_actor_hea
         let mut rejected=seed.clone();
         if untrusted_actor{rejected[572]=10;}else{rejected[585]^=1;}
         feed(&mut r,&mut seq,4,20051,&rejected);
-        assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(111,111,0));
+        assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(111,0,111));
         assert_eq!(r.protected_hp.key_count(),0);
         assert_eq!(r.diagnostics.0["protected_hp_seed_rejected"],1);
         let full=synthetic_update("c71938e787b6c816204a2c56c78a251d");
@@ -116,8 +118,8 @@ fn replay_rejected_seed_discards_prior_iv_for_both_known_and_untrusted_actor_hea
         feed(&mut r,&mut seq,6,20051,&seed);
         feed(&mut r,&mut seq,7,170209,&zero);feed(&mut r,&mut seq,8,20526,&attack());
         r.tick(300_000_000).unwrap();
-        assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(222,111,111));
-        assert_eq!(r.meter.session.estimated_total.damage,111);
+        assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(222,0,222));
+        assert_eq!(r.meter.session.estimated_total.damage,222);
     }
 }
 

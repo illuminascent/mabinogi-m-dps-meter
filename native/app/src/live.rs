@@ -287,7 +287,9 @@ pub fn controller(commands:Receiver<Command>,acks:SyncSender<Ack>,updates:Update
                 7=>return Err(String::from_utf8_lossy(data).into_owned()),_=>return Err("Unsupported capture message".into())
             }
         }
-        session.tick_recorded(now_ns().saturating_sub(1_250_000_000));
+        // Advance the same capture-clock watermark used by the ownership
+        // holdback, rather than aging queued packets against controller time.
+        session.tick_recorded(now_ns().saturating_sub(wire::OWNERSHIP_HOLDBACK_MS*1_000_000));
         if last_publish.elapsed()>=Duration::from_millis(200)||terminal {
             let snapshot=session.replay.meter.snapshot();let learned=session.replay.meter.registry.tracking.appearances.len();
             let self_status=if snapshot.self_binding.key.is_some(){"Self identified"}else{"Learning self identity"};

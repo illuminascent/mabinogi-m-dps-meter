@@ -1,10 +1,10 @@
-# Local reference material and investigation history are never published.
+# Local reference material and investigation history stay private.
 /MMH-*/
 /prototypes/
 /analysis/
 /.analysis-tools/
-/docs/
-/AGENTS.md
+/docs/*
+!/docs/uniform-attribution-spec.md
 /assets/ui/
 /app.ico
 /native/app/assets/README.md

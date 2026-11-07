@@ -16,7 +16,9 @@ impl Session {
     }
     fn decoded(&mut self,result:crate::Result<()>){
         if let Err(error)=result{
-            self.replay.reset_inference();self.replay.meter.partial=true;
+            // Pending attribution remains owned by Replay until meter ACK. A
+            // semantic exception must never clear undelivered actor credit.
+            self.replay.meter.partial=true;
             self.replay.diagnostics.report("semantic_decoder_paused");self.decoding_error=Some(error);
         }
     }
@@ -34,6 +36,12 @@ impl Session {
     pub fn command(&mut self,command:Command)->Ack {
         let reset=matches!(command.action,crate::meter::Action::Reset);
         let persist=matches!(command.action,crate::meter::Action::AssignSelf(_));
+        if reset && self.replay.meter.reset_command_ready(&command){
+            if let Err(error)=self.replay.commit_pending(){
+                self.replay.meter.partial=true;
+                return Ack{id:command.id,applied:false,reason:Some(error),snapshot:self.replay.meter.snapshot(),persistence:None};
+            }
+        }
         let mut ack=self.replay.meter.command(command);
         if reset && ack.applied {self.replay.reset_inference();}
         if ack.applied && persist { if let Some(path)=&self.cache_path {

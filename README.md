@@ -1,10 +1,9 @@
 # Mabinogi Mobile DPS meter
 
-Latest release: [v0.2.1](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.1).
-That release contains HP parsing and evidence retention. Current source is
-**0.2.2**, with bounded packet-level credit assignment, shared no-friendly-fire
-eligibility and idle-based fallback. **0.2.2 is not published; release remains
-blocked.** See the [Rust code guide](native/README.md) and
+Latest prerelease: [v0.2.2](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.2).
+Version **0.2.2** adds bounded packet-level credit assignment, shared
+no-friendly-fire eligibility and idle-based fallback to the HP parsing and
+evidence retention introduced in v0.2.1. See the [Rust code guide](native/README.md) and
 [attribution contract](docs/uniform-attribution-spec.md).
 
 A standalone Rust DPS meter for the Japanese Windows client. It passively reads

@@ -5,11 +5,12 @@ Updated 2026-11-08, Asia/Tokyo.
 ## Current state
 
 Source and the validated local meter are **0.2.2**; Windows file version is
-0.2.2.0 and capture ABI remains 2. The latest published baseline is **v0.2.1**,
-commit `619bf40058d2727c2036d617344c1ae7ecb5f20b`; its release is unchanged.
-**GitHub release remains blocked.** Building a local binary does not authorize
-tagging, pushing, publishing, starting live capture or terminating a running app.
-The user authorized committing the current implementation and documentation.
+0.2.2.0 and capture ABI remains 2. Release **v0.2.2** follows the GitHub prerelease
+convention. The previous v0.2.1 baseline is commit
+`619bf40058d2727c2036d617344c1ae7ecb5f20b`; that release remains unchanged.
+The user explicitly authorized the commit, push and GitHub release for 0.2.2,
+superseding the earlier publication block. Building or publishing does not
+authorize live capture, terminating a running app, or future releases.
 
 Read [native/README.md](native/README.md) for module ownership/build commands and
 [docs/uniform-attribution-spec.md](docs/uniform-attribution-spec.md) before damage
@@ -120,4 +121,4 @@ Use the locked offline build/test scripts in the README. Private tests require
 live capture. A reviewer requested to be fresh must start without inherited
 conversation history. Report scope and observed limits rather than a blanket
 accuracy/completeness claim. Commit/push/release are separate actions; the current
-authorization permits the commit only, and publication remains blocked.
+authorization covers committing, pushing and publishing v0.2.2 only.

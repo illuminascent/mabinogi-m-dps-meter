@@ -1,7 +1,7 @@
 # Rust code guide
 
-Current source version: **0.2.2**. The published baseline is v0.2.1; publishing
-0.2.2 remains blocked. The application and embedded capture code share version
+Current source version: **0.2.2**, following the GitHub prerelease convention.
+The application and embedded capture code share version
 0.2.2, Windows file version is 0.2.2.0, and capture ABI remains 2.
 
 Read the [attribution contract](../docs/uniform-attribution-spec.md) before

@@ -1,7 +1,8 @@
 # Uniform packet attribution contract
 
 2026-11-08. Current contract, superseding forced roster expansion and mandatory
-publication without an eligible attacker. GitHub release remains blocked.
+publication without an eligible attacker. The user explicitly authorized the
+0.2.2 GitHub prerelease after local implementation and validation.
 
 ## Scope and invariants
 

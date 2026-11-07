@@ -8,6 +8,8 @@ pub mod transport;
 pub mod session;
 pub mod health;
 pub mod protected_hp;
+pub mod hp_wire;
+pub mod hp_evidence;
 pub mod combat;
 
 pub type Result<T> = std::result::Result<T, String>;

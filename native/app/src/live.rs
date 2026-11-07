@@ -268,30 +268,31 @@ pub fn controller(commands:Receiver<Command>,acks:SyncSender<Ack>,updates:Update
             match kind {
                 2=>{let v:serde_json::Value=serde_json::from_slice(data).map_err(|e|e.to_string())?;let next=v["epoch"].as_u64().ok_or("Missing ownership epoch")?;
                     if next<=epoch{return Err("Non-increasing ownership epoch".into());}
-                    if !first{session.replay.process_replacement(next)?;}first=false;epoch=next;metadata.push(v);
+                    if !first{session.process_recorded(next);}first=false;epoch=next;metadata.push(v);
                 },
                 3=>{let (batch_epoch,segments)=wire::decode_segments(data)?;if batch_epoch!=epoch{return Err("Packet ownership epoch mismatch".into());}
                     for s in segments {
                         let line=serde_json::json!({"timestamp_ns":s.timestamp_ns,"src":s.flow.src,"sport":s.flow.sport,"dst":s.flow.dst,"dport":s.flow.dport,"seq":s.seq,"syn":s.syn,"fin":s.fin,"rst":s.rst,"ack":s.ack,"payload_hex":hex(&s.payload)});
                         serde_json::to_writer(&mut record,&line).map_err(|e|e.to_string())?;record.write_all(b"\n").map_err(|e|e.to_string())?;
-                        session.replay.feed(Input::Segment(s))?;
+                        session.feed_recorded(Input::Segment(s));
                     }
                 },
                 4=>status=String::from_utf8(data.to_vec()).map_err(|e|e.to_string())?,
                 5=>{let detail=String::from_utf8(data.to_vec()).map_err(|e|e.to_string())?;let code=detail.split(':').next().unwrap_or("capture_report").to_string();
                     let reset=code=="capture_handover"||code=="packet_rejected";
                     let line=serde_json::json!({"type":"loss","code":code,"detail":detail,"reset_streams":reset});
-                    serde_json::to_writer(&mut record,&line).map_err(|e|e.to_string())?;record.write_all(b"\n").map_err(|e|e.to_string())?;session.replay.feed(Input::Loss{code,reset})?;
+                    serde_json::to_writer(&mut record,&line).map_err(|e|e.to_string())?;record.write_all(b"\n").map_err(|e|e.to_string())?;session.feed_recorded(Input::Loss{code,reset});
                 },
                 6=>{terminal=true;status="Capture finished; recordings saved".into();break;},
                 7=>return Err(String::from_utf8_lossy(data).into_owned()),_=>return Err("Unsupported capture message".into())
             }
         }
-        session.replay.tick(now_ns().saturating_sub(1_250_000_000))?;
+        session.tick_recorded(now_ns().saturating_sub(1_250_000_000));
         if last_publish.elapsed()>=Duration::from_millis(200)||terminal {
             let snapshot=session.replay.meter.snapshot();let learned=session.replay.meter.registry.tracking.appearances.len();
             let self_status=if snapshot.self_binding.key.is_some(){"Self identified"}else{"Learning self identity"};
-            *updates.lock().unwrap()=Some(Ok((snapshot,format!("{status}  ·  {self_status}  ·  {learned} players observed"))));last_publish=Instant::now();record.flush().map_err(|e|e.to_string())?;
+            let display=session.decoding_error.as_ref().map(|e|format!("Decoder paused; recording continues: {e}")).unwrap_or_else(||format!("{status}  ·  {self_status}  ·  {learned} players observed"));
+            *updates.lock().unwrap()=Some(Ok((snapshot,display)));last_publish=Instant::now();record.flush().map_err(|e|e.to_string())?;
         }
         if terminal{break;}
         if unsafe{WaitForSingleObject(worker_handle.0,0)}==0 && !received{return Err("Capture worker exited without final acknowledgement".into());}
@@ -299,8 +300,9 @@ pub fn controller(commands:Receiver<Command>,acks:SyncSender<Ack>,updates:Update
     }Ok(())})();
     if outcome.is_err(){session.replay.reset_inference();}session.replay.finish();record.flush().map_err(|e|e.to_string())?;
     let cache_error=session.cache_path.as_ref().and_then(|path|mabi_meter_core::identity::cache::save(&session.replay.meter.registry,path).err());
-    *updates.lock().unwrap()=Some(Ok((session.replay.meter.snapshot(),if terminal{"Capture finished; recordings saved".into()}else{"Capture interrupted; recording saved".into()})));
-    let meta=serde_json::json!({"format":"mabi-dps-rust-live-v1","ownership_epochs":metadata,"completed":terminal,"error":outcome.as_ref().err(),"cache_error":cache_error,"capture_file":path.file_name().map(|p|p.to_string_lossy())});
+    let saved_status=session.decoding_error.as_ref().map(|e|format!("Recording saved; decoding paused: {e}")).unwrap_or_else(||if terminal{"Capture finished; recordings saved".into()}else{"Capture interrupted; recording saved".into()});
+    *updates.lock().unwrap()=Some(Ok((session.replay.meter.snapshot(),saved_status)));
+    let meta=serde_json::json!({"format":"mabi-dps-rust-live-v1","ownership_epochs":metadata,"completed":terminal,"error":outcome.as_ref().err(),"decoder_error":session.decoding_error,"cache_error":cache_error,"capture_file":path.file_name().map(|p|p.to_string_lossy())});
     std::fs::write(directory.join(format!("{stem}.meta.json")),serde_json::to_vec_pretty(&meta).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
     std::fs::write(directory.join(format!("{stem}.audit.json")),serde_json::to_vec_pretty(&session.replay.audit()).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
     if outcome.is_ok() && wait_after {while let Ok(c)=commands.recv(){if acks.send(session.command(c)).is_err(){break;}}}outcome

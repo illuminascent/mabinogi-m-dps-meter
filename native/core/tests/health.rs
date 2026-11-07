@@ -4,6 +4,21 @@ fn key(actor:u32)->EntityKey {EntityKey {process:0,binding:1,actor,generation:1}
 fn at(frame:u64)->Stamp{Stamp{process:1,continuity:0,context:1,frame,order:frame,timestamp_ns:frame*1_000_000,tcp_byte:frame*60}}
 fn attack(source:EntityKey,target:EntityKey,frame:u64)->Attack{Attack{source,target,key1:7000001,key2:0,meta:[0;8],at:at(frame)}}
 fn health()->Health{let mut h=Health::default();h.self_sources(true,[key(99)].into());h}
+#[test]
+fn capacity_rejection_cannot_discard_already_committed_expired_allocations(){
+    let mut h=health();
+    for actor in 1..=4096{h.update(key(actor),100,at(0)).unwrap();}
+    h.update(key(2),90,at(1)).unwrap();h.attack(attack(key(1),key(2),2)).unwrap();
+    assert!(h.update(key(4097),100,at(300)).is_err());
+    assert_eq!(h.allocated,0); // Rejection has no expiry side effects.
+    let estimates=h.tick(300_000_000);
+    assert_eq!(estimates.iter().map(|e|e.amount as u128).sum::<u128>(),h.allocated);
+    assert_eq!(h.allocated,10);
+    let mut meter=Meter::default();
+    assert_eq!(meter.registry.observe(0,1,1).unwrap(),key(1));assert_eq!(meter.registry.observe(0,1,2).unwrap(),key(2));
+    for e in estimates{meter.add_estimate(Hit{timestamp_ns:e.timestamp_ns,source:e.source,target:e.target,damage:Damage{actor:e.source.actor,target:e.target.actor,amount:e.amount,flags:[false;5],raw_flags:[0;7]}}).unwrap();}
+    assert_eq!(meter.session.estimated_total.damage as u128,h.allocated);
+}
 #[test] fn accounting_keeps_explicit_residual_multihits_and_loss_before_heal() {
     let (source,target)=(key(1),key(2));let mut h=health();
     h.update(target,1000,at(0)).unwrap();h.update(target,900,at(1)).unwrap();h.attack(attack(source,target,2)).unwrap();

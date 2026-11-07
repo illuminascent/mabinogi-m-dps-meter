@@ -83,7 +83,7 @@ fn replay_malformed_update_closes_pending_loss_and_requires_a_new_baseline(){
     let zero=synthetic_update("478642e2bcbd73ebb6feafa2dd8b6a48");
     feed(&mut r,&mut seq,1,20051,&seed);
     feed(&mut r,&mut seq,2,170206,&zero);feed(&mut r,&mut seq,3,20526,&attack());
-    let mut malformed=zero.clone();malformed[28]=1;
+    let mut malformed=zero.clone();malformed[8]=15;
     feed(&mut r,&mut seq,4,170207,&malformed);
     assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(111,111,0));
     assert_eq!(r.protected_hp.key_count(),1);
@@ -119,6 +119,77 @@ fn replay_rejected_seed_discards_prior_iv_for_both_known_and_untrusted_actor_hea
         assert_eq!((r.health.loss,r.health.unassigned,r.health.allocated),(222,111,111));
         assert_eq!(r.meter.session.estimated_total.damage,111);
     }
+}
+
+fn plain_spawn(actor:u64,hp:u64)->Vec<u8>{
+    let mut p=synthetic_spawn("c71938e787b6c816204a2c56c78a251d",0);
+    p[..8].copy_from_slice(&actor.to_le_bytes());p[572..580].copy_from_slice(&actor.to_le_bytes());p[580]=0;
+    p[581..585].copy_from_slice(&8u32.to_le_bytes());p[585..593].copy_from_slice(&hp.to_le_bytes());p.drain(593..601);p
+}
+
+#[test]
+fn plain_status_declares_conditional_iv_and_protected_status_corroborates_forward(){
+    let mut r=mabi_meter_core::replay::Replay::new(true);r.live_scope=true;let mut seq=1;
+    feed(&mut r,&mut seq,1,20051,&plain_spawn(9,111));
+    assert_eq!(r.protected_hp.key_count(),1);
+    let zero=synthetic_update("478642e2bcbd73ebb6feafa2dd8b6a48");
+    feed(&mut r,&mut seq,2,170207,&zero);feed(&mut r,&mut seq,3,20526,&attack());
+    assert!(r.hp_evidence.observations.back().unwrap().conditional_key);
+    assert_eq!(r.hp_evidence.observations.back().unwrap().hp,0);
+    let protected=synthetic_spawn("c71938e787b6c816204a2c56c78a251d",0);
+    feed(&mut r,&mut seq,4,20051,&protected);feed(&mut r,&mut seq,5,170208,&zero);
+    assert!(!r.hp_evidence.observations.back().unwrap().conditional_key);
+    assert!(r.hp_evidence.observations.iter().find(|o|o.at.frame==2).unwrap().conditional_key);
+}
+
+#[test]
+fn corrupt_status_is_scoped_and_actor_reuse_binds_hp_to_the_new_generation(){
+    let mut r=mabi_meter_core::replay::Replay::new(true);r.live_scope=true;let mut seq=1;
+    let seed=synthetic_spawn("c71938e787b6c816204a2c56c78a251d",0);
+    feed(&mut r,&mut seq,1,20051,&seed);
+    let old=r.hp_evidence.observations.back().unwrap().target;
+    feed(&mut r,&mut seq,2,20051,&plain_spawn(10,500));
+    let mut corrupt=seed.clone();corrupt[585]^=1;
+    feed(&mut r,&mut seq,3,20051,&corrupt);
+    assert_eq!(r.protected_hp.key_count(),1); // Actor10 survives actor9 failure.
+    let mut reused=seed.clone();reused[902..906].copy_from_slice(&12345u32.to_le_bytes());
+    feed(&mut r,&mut seq,4,20051,&reused);
+    let new=r.hp_evidence.observations.back().unwrap().target;
+    assert_eq!(new.actor,old.actor);assert_ne!(new.generation,old.generation);
+    assert!(r.hp_evidence.observations.back().unwrap().previous.is_none());
+    feed(&mut r,&mut seq,5,170206,&synthetic_update("478642e2bcbd73ebb6feafa2dd8b6a48"));
+    assert_eq!(r.protected_hp_samples.back().unwrap().0,new);
+}
+
+#[test]
+fn prefix_complete_status_retains_numeric_evidence_without_borrowing_identity_or_installing_keys(){
+    let mut r=mabi_meter_core::replay::Replay::new(true);r.live_scope=true;let mut seq=1;
+    let seed=synthetic_spawn("c71938e787b6c816204a2c56c78a251d",0);
+    feed(&mut r,&mut seq,1,20051,&seed);
+    feed(&mut r,&mut seq,2,20051,&seed[..626]);
+    assert_eq!(r.hp_evidence.unbound.back().unwrap().hp,111);
+    assert_eq!(r.hp_evidence.unbound.back().unwrap().actor,9);
+    assert_eq!(r.protected_hp.key_count(),0);
+    let mut plain=9u64.to_le_bytes().to_vec();plain.extend(8u32.to_le_bytes());plain.extend(80u64.to_le_bytes());plain.push(0);
+    feed(&mut r,&mut seq,3,170205,&plain);
+    assert_eq!(r.hp_evidence.unbound.back().unwrap().hp,80);
+    assert_eq!(r.health.loss,0);
+    feed(&mut r,&mut seq,4,20051,&seed);
+    feed(&mut r,&mut seq,5,170208,&synthetic_update("478642e2bcbd73ebb6feafa2dd8b6a48"));
+    assert_eq!(r.protected_hp_samples.back().unwrap().2,0);
+}
+
+#[test]
+fn repeated_proven_generations_reclaim_keys_and_accounting_slots_in_a_live_context(){
+    let mut r=mabi_meter_core::replay::Replay::new(true);r.live_scope=true;let mut seq=1;
+    let mut seed=synthetic_spawn("c71938e787b6c816204a2c56c78a251d",0);
+    for generation in 1..=4100u32{
+        seed[902..906].copy_from_slice(&generation.to_le_bytes());
+        feed(&mut r,&mut seq,generation as u64,20051,&seed);
+        assert_eq!(r.protected_hp.key_count(),1);
+    }
+    assert!(!r.diagnostics.0.contains_key("hp_key_capacity"));assert!(!r.diagnostics.0.contains_key("hp_accounting_capacity"));
+    assert_eq!(r.hp_evidence.observations.len(),4100);
 }
 
 #[test]

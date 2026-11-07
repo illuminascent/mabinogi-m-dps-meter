@@ -45,7 +45,7 @@ fn prefix()->Character { Character::score2_personal_prefix(&0x1122334455667788u6
 #[test] fn previous_profile_caches_restore_only_metadata_and_never_participant_handles(){
     let mut old=Registry::default();let key=old.observe(1,1,10).unwrap();
     old.personal_evidence(prefix(),ev(1)).unwrap();old.appearance_named_evidence(key,c(),Some("Example".into()),ev(2)).unwrap();old.assign(Some(key)).unwrap();
-    for profile in ["mmh-jp.4-observed-v5","mmh-jp.4-observed-v6"]{
+    for profile in ["mmh-jp.4-observed-v5","mmh-jp.4-observed-v6","mmh-jp.4-observed-v7"]{
         let mut value=cache::export(&old);value["protocol_profile"]=serde_json::json!(profile);let mut fresh=Registry::default();
         assert_eq!(cache::restore(&mut fresh,&value).unwrap().metadata_records,1);assert!(fresh.records.is_empty());assert_eq!(fresh.participant(key),None);assert_eq!(fresh.self_key,None);
     }

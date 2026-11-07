@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, io::Read, sync::OnceLock};
 
 pub const MAX_WIRE: usize = 4 * 1024 * 1024;
 pub const MAX_DECODED: usize = 32 * 1024 * 1024;
-pub const PROFILE: &str = "mmh-jp.4-observed-v7";
+pub const PROFILE: &str = "mmh-jp.4-observed-v8";
 
 pub fn normalize(wire: i32) -> i32 {
     static MAP: OnceLock<BTreeMap<i32, i32>> = OnceLock::new();

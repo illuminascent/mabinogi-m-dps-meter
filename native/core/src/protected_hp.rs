@@ -1,8 +1,8 @@
 //! JP170206..170210 HP scalars. AES-128-CBC uses the actor's little-endian u64
-//! twice as its key and a per-incarnation IV carried by a kind-3 spawn. The
+//! twice as its key and a per-incarnation IV carried by common actor status. The
 //! plaintext is one little-endian u64 followed by eight PKCS#7 padding bytes.
 //! Keys survive a capture gap; temporal HP/action matching must not survive it.
-use crate::{identity::EntityKey, protocol::{u32le, u64le}, Result};
+use crate::{identity::EntityKey, Result};
 use std::collections::BTreeMap;
 
 const MAX_KEYS: usize = 4096;
@@ -26,58 +26,31 @@ pub struct SpawnSeed {
     pub iv_offset: usize,
 }
 
-/// Read only the supported protected kind-3 common-state envelope. Numeric
-/// parsing is independent of NPC labels. No scan for an actor or IV is used.
+/// Read the shared common-state prefix, independent of appearance suffixes.
 pub fn spawn_seed(wire: i32, payload: &[u8]) -> std::result::Result<Option<SpawnSeed>, DecodeError> {
-    let (p, prefix) = match wire {
-        20051 => (payload, 0),
-        20517 => (payload.get(8..).ok_or(DecodeError::Malformed)?, 8),
-        _ => return Ok(None),
-    };
-    if p.len() < 740 || p.len() > 65536 { return Ok(None); }
-    // The fixed kind-3 suffix is already used by the bounded spawn adapter.
-    let tail = p.len() - 110;
-    if u64le(p, tail) != u64::MAX || u32le(p, tail + 8) != 3 || u32le(p, tail + 16) != 0 {
-        return Ok(None);
-    }
-    if p[580] != 1 { return Ok(None); }
-    let actor = u64le(p, 0);
-    if actor == 0 || actor > u32::MAX as u64 || u64le(p, 572) != actor
-        || u32le(p, 581) != 16 || u32le(p, 601) != 16
-        || u32le(p, 621) != 0 || p[625] != 1 {
-        return Err(DecodeError::Malformed);
-    }
-    // Consume the declared common-state skill array and UTF-16 action string.
-    let count = u32le(p, 626) as usize;
-    if count > 4096 { return Err(DecodeError::Malformed); }
-    let action = 630 + 4 * count;
-    let Some(length) = p.get(action..action + 4) else { return Err(DecodeError::Malformed); };
-    let length = u32le(length, 0) as usize;
-    if length > 1024 || length % 2 != 0 { return Err(DecodeError::Malformed); }
-    let end = action + 4 + length;
-    let Some(text) = p.get(action + 4..end) else { return Err(DecodeError::Malformed); };
-    if end + 29 > tail || String::from_utf16(&text.chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()).is_err() {
-        return Err(DecodeError::Malformed);
-    }
-    let iv: [u8; 16] = p[605..621].try_into().unwrap();
-    let initial_hp = value(actor as u32, iv, p[585..601].try_into().unwrap())?;
-    Ok(Some(SpawnSeed { actor: actor as u32, iv, initial_hp, iv_offset: prefix + 605 }))
+    if !matches!(wire,20051|20054|20517){return Ok(None);}
+    let s=crate::hp_wire::status(wire,payload).map_err(|_|DecodeError::Malformed)?;
+    if s.mode==0{return Ok(None);}
+    if s.actor==0 || s.actor>u32::MAX as u64{return Err(DecodeError::ActorMismatch);}
+    let iv=s.iv.try_into().map_err(|_|DecodeError::Unsupported)?;
+    let cipher=s.hp.try_into().map_err(|_|DecodeError::Unsupported)?;
+    Ok(Some(SpawnSeed{actor:s.actor as u32,iv,initial_hp:value(s.actor as u32,iv,cipher)?,iv_offset:s.iv_offset}))
 }
 
 /// An update must carry the entire observed byte-array grammar, including its
-/// terminal zero byte. Unsupported or malformed messages never create actors.
+/// opaque trailer byte. Unsupported or malformed messages never create actors.
 pub fn message_actor(wire: i32, p: &[u8]) -> Option<u32> {
-    if !(170206..=170210).contains(&wire) || p.len() != 29 || u32le(p, 8) != 16 || p[28] != 0 {
-        return None;
-    }
-    let actor = u64le(p, 0);
+    if !(170205..=170210).contains(&wire){return None;}
+    let envelope=crate::hp_wire::envelope(p)?;
+    if envelope.blob.len()!=16{return None;}
+    let actor=envelope.actor;
     (actor > 0 && actor <= u32::MAX as u64).then_some(actor as u32)
 }
 
 struct Binding {
     iv: [u8; 16],
     round_keys: [u8; 176],
+    conditional: bool,
 }
 
 #[derive(Default)]
@@ -94,20 +67,26 @@ impl Decoder {
         if seed.actor == 0 || target.actor != seed.actor { return Err("protected HP seed actor mismatch".into()); }
         if seed.initial_hp > i64::MAX as u64 { return Err("protected HP seed value out of range".into()); }
         let index = (context, target);
-        if self.bindings.get(&index).is_some_and(|old| old.iv == seed.iv) { return Ok(false); }
+        if let Some(old)=self.bindings.get_mut(&index){if old.iv==seed.iv{old.conditional=false;return Ok(false);}}
         if !self.bindings.contains_key(&index) && self.bindings.len() >= MAX_KEYS {
             return Err("protected HP key capacity reached".into());
         }
-        self.bindings.insert(index, Binding { iv: seed.iv, round_keys: expand_key(actor_key(seed.actor)) });
+        self.bindings.insert(index, Binding { iv: seed.iv, round_keys: expand_key(actor_key(seed.actor)), conditional:false });
         Ok(true)
     }
 
     pub fn decode(&self, context: u64, target: EntityKey, wire: i32, p: &[u8]) -> std::result::Result<u64, DecodeError> {
-        if !(170206..=170210).contains(&wire) { return Err(DecodeError::Unsupported); }
+        if !(170205..=170210).contains(&wire) { return Err(DecodeError::Unsupported); }
         let actor = message_actor(wire, p).ok_or(DecodeError::Malformed)?;
         if actor != target.actor { return Err(DecodeError::ActorMismatch); }
         let binding = self.bindings.get(&(context, target)).ok_or(DecodeError::MissingIv)?;
         decode_with_keys(&binding.round_keys, binding.iv, p[12..28].try_into().unwrap())
+    }
+    /// A plain status declares IV bytes but does not verify their use with the
+    /// protected scalar codec. Keep that provenance conditional, even on repeat.
+    pub fn register_declared(&mut self,context:u64,target:EntityKey,seed:&SpawnSeed)->Result<bool>{
+        let changed=self.register(context,target,seed)?;
+        self.bindings.get_mut(&(context,target)).unwrap().conditional=true;Ok(changed)
     }
 
     pub fn forget(&mut self, target: EntityKey) { self.bindings.retain(|(_, k), _| *k != target); }
@@ -115,6 +94,8 @@ impl Decoder {
     pub fn clear_context(&mut self, context: u64) { self.bindings.retain(|(c,_),_|*c!=context); }
     pub fn clear(&mut self) { self.bindings.clear(); }
     pub fn key_count(&self) -> usize { self.bindings.len() }
+    pub fn mark_conditional(&mut self,context:u64){for ((c,_),binding) in &mut self.bindings{if *c==context{binding.conditional=true;}}}
+    pub fn conditional(&self,context:u64,target:EntityKey)->bool{self.bindings.get(&(context,target)).is_some_and(|b|b.conditional)}
 }
 
 fn actor_key(actor: u32) -> [u8; 16] {
@@ -253,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_scalar_padding_range_and_terminal_zero() {
+    fn strict_scalar_padding_and_range() {
         let iv = std::array::from_fn(|i|i as u8);
         assert_eq!(value(9, iv, hex("c71938e787b6c816204a2c56c78a251d")), Ok(111));
         assert_eq!(value(9, iv, hex("478642e2bcbd73ebb6feafa2dd8b6a48")), Ok(0));
@@ -269,14 +250,16 @@ mod tests {
         assert_eq!((seed.actor, seed.initial_hp, seed.iv_offset), (9,111,605));
         let wrapped = [42u64.to_le_bytes().as_slice(),p.as_slice()].concat();
         assert_eq!(spawn_seed(20517,&wrapped).unwrap().unwrap().iv_offset,613);
-        assert_eq!(spawn_seed(20054,&p),Ok(None));
-        for length in 0..p.len() { assert!(!matches!(spawn_seed(20051,&p[..length]),Ok(Some(_)))); }
-        for (offset,byte) in [(572,8),(581,8),(601,8),(625,0),(626,255),(630,255)] {
+        assert_eq!(spawn_seed(20054,&p),Ok(Some(seed.clone())));
+        for length in 0..626 { assert!(!matches!(spawn_seed(20051,&p[..length]),Ok(Some(_)))); }
+        assert_eq!(spawn_seed(20051,&p[..626]),Ok(Some(seed.clone())));
+        for (offset,byte) in [(572,8),(581,8),(601,8)] {
             let mut bad=p.clone();bad[offset]=byte;
             assert!(spawn_seed(20051,&bad).is_err(),"offset {offset}");
         }
         let mut plain=p.clone();plain[580]=0;assert_eq!(spawn_seed(20051,&plain),Ok(None));
-        let mut pet=p.clone();pet[898]=4;assert_eq!(spawn_seed(20051,&pet),Ok(None));
+        let mut pet=p.clone();pet[898]=4;assert_eq!(spawn_seed(20051,&pet),Ok(Some(seed.clone())));
+        for offset in [621,625,626,630]{let mut raw=p.clone();raw[offset]=255;assert_eq!(spawn_seed(20051,&raw),Ok(Some(seed.clone())));}
         let mut bad=p.clone();bad[585]^=1;assert_eq!(spawn_seed(20051,&bad),Err(DecodeError::InvalidPadding));
     }
 
@@ -292,9 +275,9 @@ mod tests {
             assert_eq!(decoder.decode(7,other,170206,&p),Err(DecodeError::MissingIv));
         }
         assert_eq!(decoder.decode(7,EntityKey{actor:10,..target()},170206,&p),Err(DecodeError::ActorMismatch));
-        assert_eq!(decoder.decode(7,target(),170205,&p),Err(DecodeError::Unsupported));
+        assert_eq!(decoder.decode(7,target(),170205,&p),Ok(111));
         for length in 0..p.len() { assert_eq!(decoder.decode(7,target(),170206,&p[..length]),Err(DecodeError::Malformed)); }
-        let mut bad=p.clone();bad[28]=1;assert_eq!(decoder.decode(7,target(),170206,&bad),Err(DecodeError::Malformed));
+        let mut raw=p.clone();raw[28]=255;assert_eq!(decoder.decode(7,target(),170206,&raw),Ok(111));
         let mut bad=p.clone();bad[8]=8;assert_eq!(decoder.decode(7,target(),170206,&bad),Err(DecodeError::Malformed));
         decoder.forget(target());assert_eq!(decoder.decode(7,target(),170206,&p),Err(DecodeError::MissingIv));
     }

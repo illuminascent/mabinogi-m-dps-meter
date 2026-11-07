@@ -1,5 +1,9 @@
 # Mabinogi Mobile DPS meter
 
+Latest release: [v0.2.1](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.1).
+This release improves HP parsing and evidence retention. The credit-assignment
+and timing redesign remains pending.
+
 A standalone Rust DPS meter for the Japanese Windows client. It passively reads
 game-owned TCP traffic through Windows Packet Monitor and displays each
 encounter's top 16 damage sources, with per-target views and available names.
@@ -72,15 +76,28 @@ distinct immediate attackers, with deterministic integer rounding. Activity is
 limited to eight messages in that TCP direction and 32 ms; a separate 200 ms wait
 allows delayed evidence without extending activity. Loss without eligible
 candidates remains unassigned. Allocations do not increase observed hit or
-critical counts. Audit v3 records the decisions, unassigned amounts, ownership,
+critical counts. Audit v4 records the decisions, unassigned amounts, ownership,
 participant bindings, identity transitions, skill evidence and partial clock bounds; clock bounds are
 not exact HP timestamps.
 
-The supported JP raid-boss HP format is decoded from its protected scalar
-messages using the IV carried by the NPC spawn. Strict actor/incarnation scope,
-message bounds, padding and numeric checks gate these values before HP accounting.
-Missing or invalid state remains unavailable. Decoding HP does not independently
+HP evidence is acknowledged before opcode, actor and key checks. Every framed
+body receives a structural classification; HP-shaped candidates retain a bounded
+preview and an interpretation outcome. Complete bodies remain in raw recordings,
+and audit history evictions are counted. An HP-shaped string remains an
+unconfirmed candidate.
+
+The JP common actor-status prefix supplies plain or protected HP and IV metadata.
+Updates share one length-prefixed scalar envelope across the six observed types.
+Uninterpreted status fields and the update trailer are retained without value
+gates. Actor generations, bounds, padding and numeric checks still apply before
+HP accounting. MAX sentinels break the arithmetic baseline. Numeric comparisons
+across continuity breaks remain audit-only; they do not add damage. Keys retained
+after gaps, and IVs declared only by plain status, carry conditional provenance.
+CBC padding does not authenticate a value. Decoding HP does not independently
 verify the source attribution of every teammate amount.
+
+If semantic decoding fails, the meter pauses decoding and continues raw recording.
+The status and saved metadata report that pause so the recording can be replayed.
 
 Timeline evidence is partial. The decoder retains embedded clock candidates,
 unwraps counters within a compatible TCP direction, and separates apparent clock

@@ -1,11 +1,12 @@
 //! Consecutive HP accounting. Allocations are amounts, never observed hits.
-use crate::{combat::{Attack,Stamp,HISTORY},identity::EntityKey,protocol::{u32le,u64le},Result};
+use crate::{combat::{Attack,Stamp,HISTORY},identity::EntityKey,protocol::u64le,Result};
 use std::collections::{BTreeMap,BTreeSet,VecDeque};
 /// Evidence delivery may lag. This escrow does not widen attack activity.
 pub const WAIT_NS:u64=200_000_000;
 pub fn parse(p:&[u8])->Option<(u32,u64)>{
-    if p.len()!=21 || u32le(p,8)!=8{return None;}
-    let actor=u64le(p,0);let hp=u64le(p,12);
+    let envelope=crate::hp_wire::envelope(p)?;
+    if envelope.blob.len()!=8{return None;}
+    let actor=envelope.actor;let hp=u64le(envelope.blob,0);
     (actor>0 && actor<=u32::MAX as u64 && hp<=i64::MAX as u64).then_some((actor as u32,hp))
 }
 #[derive(Clone,Debug)]
@@ -29,6 +30,11 @@ pub struct Health {
     pending_count:usize,evidence_count:usize,audit_bytes:usize,
 }
 impl Health {
+    pub(crate) fn has_baseline(&self,context:u64,target:EntityKey)->bool{self.slots.contains_key(&(context,target))}
+    pub(crate) fn retire_target(&mut self,target:EntityKey){
+        let contexts:Vec<_>=self.slots.keys().filter(|(_,key)|*key==target).map(|(c,_)|*c).collect();
+        for context in contexts{self.clear_target(context,target);}
+    }
     pub fn sentinel(&mut self,target:EntityKey,at:Stamp){
         if let Some(slot)=self.slots.get_mut(&(at.context,target)){for p in &mut slot.pending{if p.at.near(at){p.trusted=false;}}}
         self.outcome("sentinel or out-of-range amount");
@@ -76,9 +82,15 @@ impl Health {
     }
     fn audit_cost(a:&Accounting)->usize{256+a.evidence.len()*8+a.candidates.len()*32+a.allocations.iter().map(|a|128+a.frames.len()*8).sum::<usize>()}
     pub fn update(&mut self,target:EntityKey,hp:u64,at:Stamp)->Result<Vec<Estimate>>{
-        let result=self.expire(at);
+        if hp==i64::MAX as u64{self.clear_target(at.context,target);self.outcome("MAX HP sentinel");return Ok(Vec::new());}
         let key=(at.context,target);
+        // Reject capacity before expiring any interval. Otherwise Err would
+        // discard estimates already committed by expire(), breaking totals.
         if !self.slots.contains_key(&key) && self.slots.len()>=4096{return Err("HP accounting capacity reached".into());}
+        if self.slots.get(&key).is_some_and(|s|hp<s.hp && (self.pending_count>=8192 || s.pending.len()>=256)){
+            return Err("HP interval escrow capacity reached".into());
+        }
+        let result=self.expire(at);
         let Some(mut slot)=self.slots.remove(&key) else{
             self.slots.insert(key,Slot{hp,pending:VecDeque::new(),before:Vec::new(),explicit_before:Vec::new(),baseline:at,rotation:0});self.outcome("initial baseline");return Ok(result);
         };
@@ -87,7 +99,6 @@ impl Health {
         for p in &mut slot.pending{p.activity_end.get_or_insert(at.order);}
         if hp>slot.hp{self.outcome("HP rise");}
         if hp<slot.hp{
-            if self.pending_count>=8192 || slot.pending.len()>=256{self.slots.insert(key,slot);return Err("HP interval escrow capacity reached".into());}
             self.next_id+=1;
             let old_count=slot.before.len()+slot.explicit_before.len();
             let attacks:Vec<_>=slot.before.drain(..).filter(|a|at.near(a.at) && a.at.order>slot.baseline.order).collect();

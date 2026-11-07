@@ -2,7 +2,7 @@
 use crate::{identity::cache,meter::{Ack,Command},replay::Replay};
 use std::path::PathBuf;
 
-pub struct Session { pub replay:Replay,pub cache_path:Option<PathBuf>,pub cache_warning:Option<String> }
+pub struct Session { pub replay:Replay,pub cache_path:Option<PathBuf>,pub cache_warning:Option<String>,pub decoding_error:Option<String> }
 impl Session {
     pub fn new(mut replay:Replay,cache_path:Option<PathBuf>)->Self {
         let mut cache_warning=None;
@@ -12,7 +12,24 @@ impl Session {
                 Ok(_)=>(),Err(e)=>cache_warning=Some(format!("Saved identities rejected: {e}")),
             }
         }
-        Self { replay,cache_path,cache_warning }
+        Self { replay,cache_path,cache_warning,decoding_error:None }
+    }
+    fn decoded(&mut self,result:crate::Result<()>){
+        if let Err(error)=result{
+            self.replay.reset_inference();self.replay.meter.partial=true;
+            self.replay.diagnostics.report("semantic_decoder_paused");self.decoding_error=Some(error);
+        }
+    }
+    /// The caller durably records input first. Semantic failure freezes this
+    /// decoder but never aborts the recording loop or retries partial mutations.
+    pub fn feed_recorded(&mut self,input:crate::capture_file::Input){
+        if self.decoding_error.is_none(){let result=self.replay.feed(input);self.decoded(result);}
+    }
+    pub fn tick_recorded(&mut self,now:u64){
+        if self.decoding_error.is_none(){let result=self.replay.tick(now);self.decoded(result);}
+    }
+    pub fn process_recorded(&mut self,epoch:u64){
+        if self.decoding_error.is_none(){let result=self.replay.process_replacement(epoch);self.decoded(result);}
     }
     pub fn command(&mut self,command:Command)->Ack {
         let reset=matches!(command.action,crate::meter::Action::Reset);

@@ -18,6 +18,9 @@ pub fn load(source: Source) -> Result<Replay> {
 fn run() -> Result<i32> {
     let mut args = std::env::args_os().skip(1);
     let mode = args.next().unwrap_or_else(|| "ui".into());
+    if mode == "--version" || mode == "-V" {
+        println!("mabi-meter {}",env!("CARGO_PKG_VERSION"));return Ok(0);
+    }
     if mode == "research" {
         let mut directory = None;
         while let Some(arg) = args.next() {
@@ -54,6 +57,7 @@ fn run() -> Result<i32> {
                   mabi-meter replay FILE [--port N] [--assume-aligned] [--audit FILE]\n\
                   mabi-meter demo\n\
                   mabi-meter --check-system\n\
+                  mabi-meter --version\n\
                   mabi-meter research [--output DIRECTORY] (JSON commands on stdin)\n\
                   UI starts live capture with administrator approval. Replay needs no elevation.");
         return Ok(0);

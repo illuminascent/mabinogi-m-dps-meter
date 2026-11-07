@@ -36,7 +36,7 @@ pub fn export(registry:&Registry)->Value {
         "historical_personal":personal,"operator_receipt":operator})
 }
 pub fn restore(registry:&mut Registry,value:&Value)->Result<Restore> {
-    if value["format"].as_str()!=Some(FORMAT) || !matches!(value["protocol_profile"].as_str(),Some(profile) if profile==crate::protocol::PROFILE || profile=="mmh-jp.4-observed-v6" || profile=="mmh-jp.4-observed-v5") {
+    if value["format"].as_str()!=Some(FORMAT) || !matches!(value["protocol_profile"].as_str(),Some(profile) if profile==crate::protocol::PROFILE || profile=="mmh-jp.4-observed-v7" || profile=="mmh-jp.4-observed-v6" || profile=="mmh-jp.4-observed-v5") {
         return Err("unsupported identity cache format/profile".into());
     }
     let rows=value["names"].as_array().filter(|r|r.len()<=32768).ok_or("invalid identity cache names")?;

@@ -63,7 +63,9 @@ impl Framer {
             f.stream_byte=self.consumed+offset as u64;
             decoded_bytes += f.payload.len();
             if decoded_bytes > protocol::MAX_DECODED { return Err("decoded delivery capacity reached".into()); }
-            if !f.decoded { diag.report("frame_rejected");self.gap_pending=true; }
+            // A bounded opaque body is not missing TCP bytes. Replay breaks
+            // causal continuity separately, retaining numeric/key evidence.
+            if !f.decoded { diag.report("frame_rejected"); }
             f.gap_before=std::mem::take(&mut self.gap_pending);
             self.aligned = true; offset += f.consumed; frames.push(f);
         }

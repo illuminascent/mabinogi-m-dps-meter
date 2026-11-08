@@ -140,21 +140,15 @@ pub fn worker(args:Vec<std::ffi::OsString>)->Result<()> {
     if let Err(e)=&outcome{let _=send(&mut pipe,&mut sequence,7,e.as_bytes());}outcome
 }
 fn platform_flows(flows:&[mabi_meter_core::transport::Flow])->Result<Vec<mabi_capture::Flow>> {if flows.is_empty(){Ok(Vec::new())}else{native_flows(flows)}}
-/// Small JSON control surface for the optional Python research UI. This owns
-/// storage only: semantic decoder failures cannot interrupt evidence capture.
+/// Compatibility JSON control surface for scripted/legacy Python controls.
 pub fn research_controller(output:Option<PathBuf>)->Result<()> {
-    use crate::research::Recorder;
-    use serde_json::{json,Value};
+    use serde_json::Value;
     use std::io::{BufRead,Read};
     let emit=|value:Value|->Result<()> {
         let stdout=std::io::stdout();let mut out=stdout.lock();
         serde_json::to_writer(&mut out,&value).map_err(|e|e.to_string())?;
         out.write_all(b"\n").and_then(|_|out.flush()).map_err(|e|e.to_string())
     };
-    let base=output.unwrap_or(data_dir()?.join("research"));
-    std::fs::create_dir_all(&base).map_err(|e|e.to_string())?;
-    let path=base.join(format!("session-{}-{}",now_ns(),hex(&random()?[..4])));
-    let mut recorder=Recorder::new(&path,now_ns())?;
     // Keep stdin work bounded and off the capture/storage thread. EOF requests
     // graceful stop; a vanished GUI cannot leave an orphan capture session.
     let (tx,commands)=std::sync::mpsc::sync_channel::<std::result::Result<Value,String>>(16);
@@ -170,6 +164,19 @@ pub fn research_controller(output:Option<PathBuf>)->Result<()> {
             }
         }
     });
+    research_session(output,commands,emit)
+}
+
+/// Shared raw recorder for native and scripted controls. No semantic decoder.
+/// Disconnecting controls requests graceful stop and worker drain.
+pub fn research_session(output:Option<PathBuf>,commands:Receiver<Result<serde_json::Value>>,
+    emit:impl Fn(serde_json::Value)->Result<()>)->Result<()> {
+    use crate::research::Recorder;
+    use serde_json::{json,Value};
+    let base=output.unwrap_or(data_dir()?.join("research"));
+    std::fs::create_dir_all(&base).map_err(|e|e.to_string())?;
+    let path=base.join(format!("session-{}-{}",now_ns(),hex(&random()?[..4])));
+    let mut recorder=Recorder::new(&path,now_ns())?;
     let mut terminal=false;let mut ended_ns=None;
     let outcome=(||->Result<()>{
         emit(recorder.status("Waiting for administrator approval"))?;

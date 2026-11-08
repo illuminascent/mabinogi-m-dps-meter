@@ -12,7 +12,7 @@ pub const MAX_CREDIT_FRAMES:usize=16;
 #[derive(Clone,Debug)]
 pub enum CreditKind { Explicit{hit:Hit,at:Stamp}, Inferred(Estimate) }
 #[derive(Clone,Debug)]
-pub struct Credit { pub id:u64,pub prepared_skill:Option<Option<u32>>,pub detail_coarsened:bool,pub kind:CreditKind,pub method:&'static str }
+pub struct Credit { pub id:u64,pub prepared_skill:Option<Option<u32>>,pub detail_coarsened:bool,pub kind:CreditKind,pub method:&'static str,pub ready_after:u64 }
 impl Credit {
     pub fn source(&self)->EntityKey{match &self.kind{CreditKind::Explicit{hit,..}=>hit.source,CreditKind::Inferred(e)=>e.source}}
     pub fn amount(&self)->u64{match &self.kind{CreditKind::Explicit{hit,..}=>hit.damage.amount,CreditKind::Inferred(e)=>e.amount}}
@@ -37,8 +37,9 @@ pub struct Attribution {
     pub unattributed_explicit:u128,pub unattributed_inferred:u128,pub unattributed_outcomes:u64,pub explicit_side_conflicts:u64,
     pub no_eligible_active_unattributed:u128,pub side_conflict_unattributed:u128,pub delivery_capacity_unattributed:u128,
     pub coarsened_obligations:u64,pub coarsened_publications:u64,pub rejected_publications:u64,pub raw_detail_coarsenings:u64,
+    pub clipped_explicit_overkill:u128,pub clipped_explicit_records:u64,pub overkill_clip_unavailable:u128,pub max_explicit_finalize_work:usize,
 }
-impl Default for Attribution{fn default()->Self{Self{active_idle_ns:crate::meter::DEFAULT_IDLE_NS,actors:VecDeque::new(),relationships:VecDeque::new(),outbox:VecDeque::new(),owed:VecDeque::new(),next_receipt:0,leased:None,support_revision:0,owed_revision:0,detected_explicit:0,detected_inferred:0,settled_inferred:0,published:0,published_explicit:0,published_inferred:0,unattributed_explicit:0,unattributed_inferred:0,unattributed_outcomes:0,explicit_side_conflicts:0,no_eligible_active_unattributed:0,side_conflict_unattributed:0,delivery_capacity_unattributed:0,coarsened_obligations:0,coarsened_publications:0,rejected_publications:0,raw_detail_coarsenings:0}}}
+impl Default for Attribution{fn default()->Self{Self{active_idle_ns:crate::meter::DEFAULT_IDLE_NS,actors:VecDeque::new(),relationships:VecDeque::new(),outbox:VecDeque::new(),owed:VecDeque::new(),next_receipt:0,leased:None,support_revision:0,owed_revision:0,detected_explicit:0,detected_inferred:0,settled_inferred:0,published:0,published_explicit:0,published_inferred:0,unattributed_explicit:0,unattributed_inferred:0,unattributed_outcomes:0,explicit_side_conflicts:0,no_eligible_active_unattributed:0,side_conflict_unattributed:0,delivery_capacity_unattributed:0,coarsened_obligations:0,coarsened_publications:0,rejected_publications:0,raw_detail_coarsenings:0,clipped_explicit_overkill:0,clipped_explicit_records:0,overkill_clip_unavailable:0,max_explicit_finalize_work:0}}}
 impl Attribution {
     pub fn note_actor(&mut self,source:EntityKey,at:Stamp){self.register_actor(source,at,None);}
     fn register_actor(&mut self,source:EntityKey,at:Stamp,role:Option<u8>){
@@ -69,7 +70,7 @@ impl Attribution {
     }
     fn raw_credit(source:EntityKey,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp,method:&'static str)->Credit{
         let hit=Hit{timestamp_ns:at.timestamp_ns,source,target,damage:Damage{actor:source.actor,target:target.actor,amount:raw,flags:[flags[0]&1!=0,flags[1]&2!=0,flags[1]&4!=0,flags[3]&8!=0,flags[4]&16!=0],raw_flags:flags}};
-        Credit{id:0,prepared_skill:None,detail_coarsened:false,kind:CreditKind::Explicit{hit,at},method}
+        Credit{id:0,prepared_skill:None,detail_coarsened:false,kind:CreditKind::Explicit{hit,at},method,ready_after:0}
     }
     fn same_scope(source:EntityKey,target:EntityKey)->bool{source.process==target.process && source.binding==target.binding}
     pub fn eligibility(&self,source:EntityKey,target:EntityKey)->bool{
@@ -88,16 +89,48 @@ impl Attribution {
         if explicit{self.unattributed_explicit+=amount;}else{self.unattributed_inferred+=amount;if was_settled{self.settled_inferred-=amount;}}
     }
     pub fn submit_explicit(&mut self,source:EntityKey,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp){
-        if source.actor==0{self.submit_unbound_explicit(target,raw,flags,at);return;}
+        self.submit_explicit_held(source,target,raw,flags,at,0);
+    }
+    pub fn submit_explicit_held(&mut self,source:EntityKey,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp,ready_after:u64){
+        if source.actor==0{self.submit_unbound_explicit_held(target,raw,flags,at,ready_after);return;}
         self.detected_explicit+=raw as u128;
         if !self.eligibility(source,target){self.explicit_side_conflicts+=1;self.record_unattributed(true,raw as u128,false,Failure::SideConflict);return;}
-        self.note_relationship(source,target,at);self.enqueue(Self::raw_credit(source,target,raw,flags,at,"raw explicit source claim"));
+        self.note_relationship(source,target,at);let mut credit=Self::raw_credit(source,target,raw,flags,at,"explicit source claim awaiting HP reconciliation");credit.ready_after=ready_after;self.enqueue(credit);
     }
     pub fn submit_unbound_explicit(&mut self,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp){
+        self.submit_unbound_explicit_held(target,raw,flags,at,0);
+    }
+    pub fn submit_unbound_explicit_held(&mut self,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp,ready_after:u64){
         self.detected_explicit+=raw as u128;
         let allocations=self.fallback(target,at,raw,0,&[],"forced unbound raw source from active attackers",false);
         if allocations.is_empty(){self.record_unattributed(true,raw as u128,false,Failure::NoActive);}
-        for e in allocations{self.enqueue(Self::raw_credit(e.source,target,e.amount,flags,at,"forced unbound raw source from active attackers"));}
+        for e in allocations{let mut credit=Self::raw_credit(e.source,target,e.amount,flags,at,"forced unbound raw source from active attackers");credit.ready_after=ready_after;self.enqueue(credit);}
+    }
+    /// Finalize a still-unleased packet, never a committed receipt. A coarsened
+    /// row has lost packet identity: keep its amount and count missed clipping.
+    /// `credited` removes only proven terminal excess, retaining auxiliary raw.
+    pub fn finalize_explicit(&mut self,target:EntityKey,at:Stamp,raw:u64,credited:u64)->bool{
+        let matches=|c:&Credit|matches!(c.kind,CreditKind::Explicit{..}) && !c.detail_coarsened && c.target()==target && c.at()==at;
+        let excess=raw.saturating_sub(credited);
+        self.max_explicit_finalize_work=self.max_explicit_finalize_work.max(2*(self.outbox.len()+self.owed.len()));
+        let leased=self.leased.as_ref().is_some_and(matches);
+        let total=self.outbox.iter().filter(|r|matches(&r.credit)).map(|r|r.amount).sum::<u128>()+self.owed.iter().filter(|r|matches(&r.credit)).map(|r|r.amount).sum::<u128>();
+        if leased || credited>raw || total!=raw as u128{self.overkill_clip_unavailable+=excess as u128;return false;}
+        // Scaling a preselected source claim is clipping, not a new allocation.
+        // Cumulative integer endpoints conserve even a split unbound claim.
+        let mut before=0u128;
+        for (credit,amount) in self.outbox.iter_mut().map(|r|(&mut r.credit,&mut r.amount)).chain(self.owed.iter_mut().map(|r|(&mut r.credit,&mut r.amount))){
+            if !matches(credit){continue;}
+            let after=before+*amount;let clipped=if raw==0{0}else{after*credited as u128/raw as u128-before*credited as u128/raw as u128};before=after;
+            *amount=clipped;credit.set_amount(clipped as u64);credit.ready_after=0;
+            if excess>0{credit.method="explicit source claim with proven terminal overkill clipped";}
+        }
+        if excess>0{self.detected_explicit-=excess as u128;self.clipped_explicit_overkill+=excess as u128;self.clipped_explicit_records+=1;}
+        true
+    }
+    /// Measurement/EOF flush has already resolved all retained HP budgets.
+    pub fn release_explicit_holds(&mut self){
+        for c in self.outbox.iter_mut().map(|r|&mut r.credit).chain(self.owed.iter_mut().map(|r|&mut r.credit)){c.ready_after=0;}
     }
     /// The only allocator/fallback. Current typed packet support and recent
     /// target-specific attack evidence enter one frequency-neutral allocation.
@@ -123,14 +156,14 @@ impl Attribution {
         self.detected_inferred+=amount as u128;
         let selected=self.fallback(target,at,amount,interval,typed,method,false);
         if selected.is_empty(){self.record_unattributed(false,amount as u128,false,if typed.iter().any(|c|c.source.actor!=0 && !self.eligibility(c.source,target)){Failure::SideConflict}else{Failure::NoActive});}
-        let mut allocations=Vec::new();for e in selected{self.settled_inferred+=e.amount as u128;let old=self.unattributed_inferred;self.enqueue(Credit{id:0,prepared_skill:None,detail_coarsened:false,kind:CreditKind::Inferred(e.clone()),method});if old==self.unattributed_inferred{allocations.push(e);}}
+        let mut allocations=Vec::new();for e in selected{self.settled_inferred+=e.amount as u128;let old=self.unattributed_inferred;self.enqueue(Credit{id:0,prepared_skill:None,detail_coarsened:false,kind:CreditKind::Inferred(e.clone()),method,ready_after:0});if old==self.unattributed_inferred{allocations.push(e);}}
         allocations
     }
     fn carry(&mut self,mut o:Owed){
         self.owed_revision+=1;
         let explicit=matches!(o.credit.kind,CreditKind::Explicit{..});let source=o.credit.source();
         if let Some(old)=self.owed.iter_mut().find(|old|old.credit.source()==source && matches!(old.credit.kind,CreditKind::Explicit{..})==explicit){
-            old.amount+=o.amount;old.credit.detail_coarsened=true;old.credit.method="known source delivery coarsened under pressure";
+            old.amount+=o.amount;old.credit.ready_after=0;old.credit.detail_coarsened=true;old.credit.method="known source delivery coarsened under pressure";
             if let CreditKind::Explicit{hit,..}=&mut old.credit.kind{hit.damage.flags=[false;5];hit.damage.raw_flags=[0;7];self.raw_detail_coarsenings+=1;}
             if let CreditKind::Inferred(e)=&mut old.credit.kind{e.skill=None;e.frames.clear();}
             self.coarsened_obligations+=1;return;
@@ -162,7 +195,9 @@ impl Attribution {
         // takes priority over another full scan for target-detail agreement.
         let index=self.outbox.iter().position(|r|r.credit.source()==source && matches!(r.credit.kind,CreditKind::Explicit{..})==explicit);
         if let Some(i)=index{
-            self.outbox[i].amount+=credit.amount() as u128;self.outbox[i].credit.detail_coarsened=true;self.outbox[i].credit.method="forced publication pressure; timing target skill flags and hit count detail coarsened";
+            // Coarsening has lost packet clipping identity. Do not extend the
+            // front hold on every new hit and starve delivery under pressure.
+            self.outbox[i].amount+=credit.amount() as u128;self.outbox[i].credit.ready_after=0;self.outbox[i].credit.detail_coarsened=true;self.outbox[i].credit.method="forced publication pressure; timing target skill flags and hit count detail coarsened";
             if let CreditKind::Explicit{hit,..}=&mut self.outbox[i].credit.kind{hit.damage.flags=[false;5];hit.damage.raw_flags=[0;7];self.raw_detail_coarsenings+=1;}
             if let CreditKind::Inferred(e)=&mut self.outbox[i].credit.kind{e.skill=None;e.frames.clear();e.method="forced publication pressure; timing target skill detail coarsened";}
             self.coarsened_publications+=1;return;
@@ -172,6 +207,12 @@ impl Attribution {
     }
     /// Peeking leases an immutable amount/receipt, so an enqueue before ack
     /// cannot accidentally acknowledge newly merged damage.
+    pub fn front_ready_credit(&mut self,available:u64)->Option<Credit>{
+        if self.leased.is_some(){return self.front_credit();}
+        if self.outbox.is_empty(){self.settle_owed();}
+        if self.outbox.front().is_some_and(|r|r.credit.ready_after!=0 && r.credit.ready_after>=available){return None;}
+        self.front_credit()
+    }
     pub fn front_credit(&mut self)->Option<Credit>{
         if let Some(leased)=&self.leased{return Some(leased.clone());}
         if self.outbox.is_empty(){self.settle_owed();}
@@ -204,7 +245,7 @@ impl Attribution {
         let allocations=self.fallback(target,at,n,id,&support,"forced eligible active attacker after consumer rejection",true);if allocations.is_empty(){return self.reject_leased_for(id,Failure::DeliveryCapacity);}
         let raw=match &original.kind{CreditKind::Explicit{hit,..}=>Some(hit.damage.raw_flags),_=>None};
         let Some(row)=self.outbox.front_mut()else{return false;};row.amount-=n as u128;if row.amount==0{self.outbox.pop_front();}self.leased=None;self.rejected_publications+=1;
-        for e in allocations{let mut credit=if let Some(flags)=raw{Self::raw_credit(e.source,target,e.amount,flags,at,"forced eligible active attacker after consumer rejection")}else{Credit{id:0,prepared_skill:None,detail_coarsened:false,kind:CreditKind::Inferred(e),method:"forced eligible active attacker after consumer rejection"}};credit.detail_coarsened=original.detail_coarsened;self.enqueue(credit);}true
+        for e in allocations{let mut credit=if let Some(flags)=raw{Self::raw_credit(e.source,target,e.amount,flags,at,"forced eligible active attacker after consumer rejection")}else{Credit{id:0,prepared_skill:None,detail_coarsened:false,kind:CreditKind::Inferred(e),method:"forced eligible active attacker after consumer rejection",ready_after:0}};credit.detail_coarsened=original.detail_coarsened;self.enqueue(credit);}true
     }
     pub fn owed_amount(&self)->u128{self.owed.iter().map(|o|o.amount).sum()}
     pub fn unattributed_amount(&self)->u128{self.unattributed_explicit+self.unattributed_inferred}
@@ -216,6 +257,8 @@ impl Attribution {
         let owed_raw=self.owed.iter().filter(|o|matches!(o.credit.kind,CreditKind::Explicit{..})).map(|o|o.amount).sum::<u128>();let queued=self.queued_amount();let owed=self.owed_amount();
         let mut audit=serde_json::json!({"format":"active-attribution-v2","detected_explicit":self.detected_explicit.to_string(),"detected_inferred":self.detected_inferred.to_string(),"total_obligations":(self.detected_explicit+self.detected_inferred).to_string(),"published":self.published.to_string(),"queued":queued.to_string(),"owed":owed.to_string(),"invariant":self.detected_explicit+self.detected_inferred==self.published+queued+owed+self.unattributed_amount(),"settled_inferred":self.settled_inferred.to_string(),"queued_rows":self.outbox.len(),"owed_rows":self.owed.len(),"actors":self.actors.len(),"relationships":self.relationships.len(),"support_revision":self.support_revision,"coarsened_obligations":self.coarsened_obligations,"coarsened_publications":self.coarsened_publications,"raw_detail_coarsenings":self.raw_detail_coarsenings,"rejected_publications":self.rejected_publications});
         audit["active_idle_ns"]=serde_json::json!(self.active_idle_ns);audit["unattributed"]=serde_json::json!(self.unattributed_amount().to_string());audit["unattributed_explicit"]=serde_json::json!(self.unattributed_explicit.to_string());audit["unattributed_inferred"]=serde_json::json!(self.unattributed_inferred.to_string());audit["unattributed_outcomes"]=serde_json::json!(self.unattributed_outcomes);audit["explicit_side_conflicts"]=serde_json::json!(self.explicit_side_conflicts);
+        audit["observed_raw_explicit"]=serde_json::json!((self.detected_explicit+self.clipped_explicit_overkill).to_string());
+        audit["overkill_clipped_explicit"]=serde_json::json!(self.clipped_explicit_overkill.to_string());audit["overkill_clipped_records"]=serde_json::json!(self.clipped_explicit_records);audit["overkill_clip_unavailable"]=serde_json::json!(self.overkill_clip_unavailable.to_string());audit["max_explicit_finalize_work"]=serde_json::json!(self.max_explicit_finalize_work);
         audit["unattributed_reasons"]=serde_json::json!({"no_eligible_active_unattributed":self.no_eligible_active_unattributed.to_string(),"side_conflict_unattributed":self.side_conflict_unattributed.to_string(),"delivery_capacity_unattributed":self.delivery_capacity_unattributed.to_string(),"invariant":self.no_eligible_active_unattributed+self.side_conflict_unattributed+self.delivery_capacity_unattributed==self.unattributed_amount()});
         audit["by_origin"]=serde_json::json!({"explicit":{"published":self.published_explicit.to_string(),"queued":queued_raw.to_string(),"owed":owed_raw.to_string(),"unattributed":self.unattributed_explicit.to_string(),"invariant":self.detected_explicit==self.published_explicit+queued_raw+owed_raw+self.unattributed_explicit},"inferred":{"published":self.published_inferred.to_string(),"queued":(queued-queued_raw).to_string(),"owed":(owed-owed_raw).to_string(),"unattributed":self.unattributed_inferred.to_string(),"invariant":self.detected_inferred==self.published_inferred+(queued-queued_raw)+(owed-owed_raw)+self.unattributed_inferred}});
         audit["owed_preview"]=serde_json::json!(self.owed.iter().take(8).map(|o|serde_json::json!({"source_actor":o.credit.source().actor,"target_actor":o.credit.target().actor,"context":o.credit.at().context,"amount":o.amount.to_string(),"raw":matches!(o.credit.kind,CreditKind::Explicit{..}),"detail_coarsened":o.credit.detail_coarsened})).collect::<Vec<_>>());

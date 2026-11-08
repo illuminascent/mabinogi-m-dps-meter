@@ -3,6 +3,9 @@
 2026-11-08. Current contract, superseding forced roster expansion and mandatory
 publication without an eligible attacker. The user explicitly authorized the
 0.2.2 GitHub prerelease after local implementation and validation.
+The explicit-overkill follow-up is patch revision 0.2.3, as requested by the
+user, without a major/minor bump. The user authorized its main commit, push and
+GitHub prerelease on 2026-11-08. Capture ABI remains 2.
 
 ## Scope and invariants
 
@@ -48,6 +51,11 @@ filter, hot/warm multiplier or extra activity timeout follows from this example.
    proof arrives later while the budget remains pending. Only clean independent
    anchors train the existing constrained actor/ability/component/target model.
    Estimates, conflicts and uncertain gap/batch evidence are not training truth.
+   A zero endpoint with one isolated concordant eligible explicit/presentation
+   pair may prove terminal excess. Subtract only `impact - observed HP loss`
+   when positive, leaving the existing auxiliary interpretation intact. Missing,
+   conditional, sentinel-contested, truncated, batched or role-disagreeing
+   evidence cannot supply that cap. Never clip a surviving endpoint.
 4. Attribution owns sole allocation/fallback, actual attack history, bounded
    known-source delivery debt, immutable leases and acknowledgments. Strong
    current packet support is used first; otherwise eligible recent attackers
@@ -61,7 +69,7 @@ filter, hot/warm multiplier or extra activity timeout follows from this example.
    Already committed receipts ACK idempotently before any attempted reselection.
 6. Meter rejects known forbidden pairs before mutation and atomically credits
    actor amounts. Derived detail pressure cannot partially reject actor credit.
-   Raw credit publishes with Unknown ability when needed; bounded later ability
+   Explicit credit publishes with Unknown ability when needed; bounded later ability
    refinement changes metadata without republishing damage. Boundaries drain
    both outbox and known-source debt, or retain the old measurement boundary.
 
@@ -70,6 +78,11 @@ known-source owed + unattributed. Both origins and unattributed reasons are
 checked separately. Canonical HP independently reconciles to matched eligible
 explicit impact + inferred + unattributed. Raw explicit amount is not asserted
 to equal physical HP impact. Conservation alone does not prove actor accuracy.
+Observed finite raw explicit amount = detected explicit credit obligations +
+proven clipped overkill. Count clipping separately from unattributed damage;
+retained wire observations and raw HP claims keep their original amounts.
+Only unleased credits may be clipped. A leased or coarsened packet keeps its
+amount; attempted clipping that lost packet identity is counted as unavailable.
 
 ## Activity and bounds
 
@@ -93,6 +106,15 @@ association. These are empirical engineering policies, not activity thresholds
 or server causality axioms. Three seconds was not accepted. Upstream ownership
 holdback and UI publication are separate latency factors.
 
+With an existing target-local HP baseline, hold explicit publication until its
+HP reconciliation finalizes. The bounded fallback deadline is existing capture
+locality plus existing availability retention (100 + 250 ms by default), covering
+an explicit packet that precedes its HP update. Keep an associated fact until
+that pending budget resolves. No-baseline explicit credits need no hold. EOF and
+measurement boundaries resolve HP first, then release unmatched raw credits.
+Pressure coarsening releases its hold so continuous new input cannot starve
+delivery; packet-specific clipping may then fail with its own diagnostic count.
+
 Numeric retains 1,024 baselines. Health retains 1,024 slots, 1,024 pending budgets
 (64 per target), 4,096 facts(128 per target), 256 orphan claims and bounded audit/
 preview/scratch. Attribution retains 512 side records, 1,024 activity relationships,
@@ -104,20 +126,33 @@ amount; it is never mislabeled cold and never assigns an arbitrary bystander.
 
 Storage is O(S+G+B+A+bounded dependencies). Target association costs
 O(PF+F²+F log F); resolving all target budgets can cost O(P²F+PF²).
+Explicit finalization adds O(E(C+D)) for E consumed explicit claims and bounded
+queued/owed rows C/D; at most 4,096 row visits per claim are counted separately.
 Fallback scans/sorts bounded support. Activity lookup is bounded by 1,024 pairs.
 Registry-revision revalidation scans bounded facts/relationships before training.
 Publication processes at most 1,024 leases per invocation; boundary draining is
 bounded and cannot switch membership while delivery remains pending. Report
 actual service measurements and conservative allocation bounds below 10 MiB.
 
+For cross-player validation, align shared event payloads/order before comparing
+amounts. Keep finite raw explicit amounts, checked HP-impact candidates and
+terminal HP clipping separate. Report unmatched and unsupported cohorts; an
+identical single-source HP cell cannot validate mixed-source allocation weights.
+Peer capture labels remain offline validation evidence and cannot turn runtime
+estimates into training truth or justify adding unobserved overkill to HP loss.
+
 ## Validation
 
 Test all direct/modeled/fallback/retry/pressure paths, player/pet combinations,
 raw conflict without HP overlap/training, later identity and cache eviction,
 idle boundary/config changes, appearance-only cold state, gaps, later-attack
-overwrite, immutable receipts and full-outbox reset. Replay all 14 original inputs,
-world snapshot and completed town recording with original hashes/frame/raw-field
-counts. Preserve true numeric HP denominator and report unattributed causes.
+overwrite, immutable receipts and full-outbox reset. Replay all retained completed
+research captures, the retained world snapshot and relevant private fixtures with
+their hashes/frame/raw-field counts. The user confirmed on 2026-11-08 that the ten
+older `live-*.jsonl` inputs in the historical original14 corpus were deliberately
+pruned; their absence is not a pending recovery task. Use current research
+recordings for current validation. Preserve true numeric HP denominator and
+report unattributed causes.
 Build Windows app, system check without capture, demo, UI smoke and app replay;
 update only dist/mabi-meter.exe. No release, commit, push or live capture follows
 from local validation. Unknown affiliations and bounded-history accuracy remain

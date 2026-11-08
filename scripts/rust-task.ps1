@@ -2,6 +2,7 @@ param(
     [ValidateSet('Build','Test','Fetch')][string]$Task = 'Build',
     [switch]$UseDocker,
     [switch]$LocalFixtures,
+    [switch]$Research,
     [string]$Image = 'mba-winbuild:latest',
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*\.exe$')][string]$OutputName = 'mabi-meter.exe'
 )
@@ -31,6 +32,10 @@ $cargoArgs = @(switch ($Task) {
         if ($LocalFixtures) { @('--','--include-ignored') }
     }
 })
+if ($Research) {
+    if ($Task -ne 'Build') { throw '-Research is a build option.' }
+    $cargoArgs += @('--features','research-ui')
+}
 
 if ($dockerBuild) {
     $networkMode = if ($Task -eq 'Fetch') { 'bridge' } else { 'none' }

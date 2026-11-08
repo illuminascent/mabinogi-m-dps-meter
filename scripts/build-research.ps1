@@ -1,5 +1,4 @@
 param([switch]$UseDocker,[string]$Image = 'mba-winbuild:latest')
 $ErrorActionPreference = 'Stop'
-& (Join-Path $PSScriptRoot 'build-rust.ps1') -UseDocker:$UseDocker -Image $Image -OutputName 'mabi-research.exe'
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'capture_epochs.py') -Destination (Join-Path $PSScriptRoot '../dist/capture-epochs.pyw')
-Write-Host 'Launch dist/capture-epochs.pyw with Python 3.12+ (Tk included).'
+& (Join-Path $PSScriptRoot 'rust-task.ps1') -Task Build -Research -UseDocker:$UseDocker -Image $Image -OutputName 'mabi-research.exe'
+Write-Host 'Launch dist/mabi-research.exe. This single EXE needs no Python or capture DLL.'

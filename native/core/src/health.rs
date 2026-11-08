@@ -64,11 +64,11 @@ impl Health{
     pub fn self_sources(&mut self,_known:bool,_own:BTreeSet<EntityKey>){}
     pub fn note_actor(&mut self,source:EntityKey,at:Stamp){self.attribution.note_actor(source,at);self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;}
     pub fn refresh_support(&mut self){self.attribution.refresh_support();self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;}
-    pub fn front_credit(&mut self)->Option<crate::attribution::Credit>{let credit=self.attribution.front_credit();self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;credit}
+    pub fn front_credit(&mut self)->Option<crate::attribution::Credit>{let credit=self.attribution.front_ready_credit(self.available);self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;credit}
     pub fn note_actor_kind(&mut self,source:EntityKey,kind:&str,at:Stamp){self.attribution.note_actor_kind(source,kind,at);self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;}
     pub fn unbound_explicit(&mut self,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp)->Result<()>{self.unbound_explicit_fields(target,raw,None,flags,at)}
     pub fn unbound_explicit_fields(&mut self,target:EntityKey,raw:u64,impact:Option<u64>,flags:[u8;7],at:Stamp)->Result<()>{
-        self.attribution.submit_unbound_explicit(target,raw,flags,at);
+        let now=self.now(at);let deadline=if self.slots.contains_key(&(at.context,target)){now.saturating_add(self.local_capture_ns).saturating_add(self.retention_ns)}else{0};self.attribution.submit_unbound_explicit_held(target,raw,flags,at,deadline);
         let kind=Kind::Explicit{source:EntityKey{process:at.process,binding:0,actor:0,generation:0},raw,impact,flags};if self.slots.contains_key(&(at.context,target)){self.push_fact((at.context,target),at,kind);}else{self.retain_orphan(target,at,kind);}
         Ok(())
     }
@@ -134,7 +134,7 @@ impl Health{
     pub fn attack(&mut self,a:Attack)->Result<()>{if !self.attribution.eligibility(a.source,a.target){self.outcome("forbidden same-side attack excluded");return Ok(());}self.attribution.note_relationship(a.source,a.target,a.at);self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;let key=(a.at.context,a.target);if !self.slots.contains_key(&key){self.outcome("attack without baseline; compact source support retained");return Ok(());}self.push_fact(key,a.at,Kind::Attack(a));Ok(())}
     pub fn explicit(&mut self,source:EntityKey,target:EntityKey,amount:u64,at:Stamp)->Result<()>{self.explicit_fields(source,target,amount,Some(amount),[0;7],at)}
     pub fn explicit_fields(&mut self,source:EntityKey,target:EntityKey,raw:u64,impact:Option<u64>,flags:[u8;7],at:Stamp)->Result<()>{
-        self.attribution.submit_explicit(source,target,raw,flags,at);self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;if !self.attribution.eligibility(source,target){self.outcome("forbidden explicit source; raw observation retained outside attribution");return Ok(());}
+        let now=self.now(at);let deadline=if self.slots.contains_key(&(at.context,target)){now.saturating_add(self.local_capture_ns).saturating_add(self.retention_ns)}else{0};self.attribution.submit_explicit_held(source,target,raw,flags,at,deadline);self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;if !self.attribution.eligibility(source,target){self.outcome("forbidden explicit source; raw observation retained outside attribution");return Ok(());}
         let key=(at.context,target);
         if impact==Some(0){self.outcome("zero HP impact; no positive budget claim");}
         if !self.slots.contains_key(&key){self.retain_orphan(target,at,Kind::Explicit{source,raw,impact,flags});self.outcome("explicit without baseline; claim retained");return Ok(());}
@@ -294,6 +294,23 @@ impl Health{
         }
         let mismatch=sum>p.amount as u128;let matched=sum.min(p.amount as u128) as u64;let residual=p.amount-matched;let unresolved=assignment.unsupported;
         let mut attacks=Vec::new();for i in &assignment.attacks{let f=&s.facts[*i];consumed.insert(f.id);if !paired.contains(i){if let Kind::Attack(a)=&f.kind{attacks.push(a);}}}
+        // A terminal endpoint is a raw-impact ceiling only for a structurally
+        // isolated, concordant explicit/presentation pair. Never clip on mere
+        // proximity, amount equality, a stale baseline or a role disagreement.
+        // Candidate clock brackets remain annotations; stream-local evidence
+        // does not become invalid solely because partial clocks disagree.
+        let terminal_clip=if p.hp_after==0 && !unresolved && !p.sentinel_uncertain && !p.conditional && !ambiguous && !s.truncated && !assignment.batched && assignment.explicit.len()==1 && assignment.attacks.len()==1{
+            let f=&s.facts[assignment.explicit[0]];
+            match (&f.kind,&s.facts[assignment.attacks[0]].kind){
+                (Kind::Explicit{source,raw,impact:Some(n),flags},Kind::Attack(a)) if *source==a.source && a.meta[..7]==flags[..] && *n>p.amount && *n<=*raw=>Some((f.id,raw-(n-p.amount))),
+                _=>None,
+            }
+        }else{None};
+        let mut clipped=false;
+        for f in &s.facts{if consumed.contains(&f.id){if let Kind::Explicit{raw,..}=&f.kind{
+            let credited=terminal_clip.filter(|(id,_)|*id==f.id).map_or(*raw,|(_,amount)|amount);
+            if self.attribution.finalize_explicit(key.1,f.at,*raw,credited) && credited<*raw{clipped=true;self.outcome("terminal explicit overkill clipped");}
+        }}}
         // Structural witness first, arithmetic check second. Inferred amounts,
         // role disagreements and multiple components are not training truth.
         if !unresolved && !p.clock_uncertain && !p.sentinel_uncertain && !p.conditional && !mismatch && !ambiguous && !s.truncated && assignment.explicit.len()==1 && assignment.attacks.len()==1{
@@ -314,7 +331,7 @@ impl Health{
             for i in &assignment.explicit{if let Kind::Explicit{source,..}=&s.facts[*i].kind{groups.entry((*source,None)).or_insert((1.0,false,vec![s.facts[*i].at.frame]));}}
         }
         let mut candidates:Vec<_>=groups.keys().map(|(s,_)|*s).filter(|s|s.actor!=0).collect::<BTreeSet<_>>().into_iter().collect();let trained=groups.values().all(|(_,t,_)|*t);
-        let method=if assignment.unsupported{"forced uncertain raw overlap and HP residual"}else if residual==0{"explicit accounted"}else if groups.is_empty(){forced.unwrap_or("no eligible active attacker at retention limit")}else if p.sentinel_uncertain{"forced unpublished-sentinel actor inference"}else if p.clock_uncertain{"forced clock-uncertain actor inference"}else if p.conditional{"forced conditional-key actor inference"}else if s.truncated{"forced inference with truncated evidence"}else if assignment.batched{"forced batch sequence inference"}else if ambiguous{"forced ambiguous packet association"}else if candidates.len()==1{"single packet-supported actor"}else if trained{"constrained actor/component model"}else{"forced sparse actor/component prior"};
+        let method=if assignment.unsupported{"forced uncertain raw overlap and HP residual"}else if clipped{"explicit accounted; terminal overkill clipped"}else if residual==0{"explicit accounted"}else if groups.is_empty(){forced.unwrap_or("no eligible active attacker at retention limit")}else if p.sentinel_uncertain{"forced unpublished-sentinel actor inference"}else if p.clock_uncertain{"forced clock-uncertain actor inference"}else if p.conditional{"forced conditional-key actor inference"}else if s.truncated{"forced inference with truncated evidence"}else if assignment.batched{"forced batch sequence inference"}else if ambiguous{"forced ambiguous packet association"}else if candidates.len()==1{"single packet-supported actor"}else if trained{"constrained actor/component model"}else{"forced sparse actor/component prior"};
         let support:Vec<_>=groups.into_iter().map(|((source,skill),(weight,_,frames))|Candidate{source,skill,weight,frames}).collect();
         let failed_before=self.attribution.unattributed_inferred;let no_active_before=self.attribution.no_eligible_active_unattributed;let capacity_before=self.attribution.delivery_capacity_unattributed;let allocations=self.attribution.resolve_budget(key.1,p.at,p.id,residual,&support,method);let unassigned=(self.attribution.unattributed_inferred-failed_before)as u64;self.no_support_loss+=self.attribution.no_eligible_active_unattributed-no_active_before;self.capacity_loss+=self.attribution.delivery_capacity_unattributed-capacity_before;
         candidates.extend(allocations.iter().map(|e|e.source));candidates.sort();candidates.dedup();
@@ -337,7 +354,7 @@ impl Health{
     pub fn tick_with_model(&mut self,now:u64,model:&mut DamageModel)->Vec<Estimate>{
         self.set_available(now);while let Some((deadline,c,t,id))=self.deadlines.first().copied(){if deadline>=self.available{break;}self.resolve_one((c,t),id,None,model);}
         // Insertion order also orders monotonic availability; no inactive-slot scan.
-        while let Some((id,c,t))=self.fact_order.first().copied(){let key=(c,t);let expired=self.slots.get(&key).and_then(|s|s.facts.iter().find(|f|f.id==id)).is_none_or(|f|self.available.saturating_sub(f.available)>self.retention_ns);if !expired{break;}self.drop_fact(key,id,false);self.outcome("unclaimed packet fact age expiry");}self.drain_ready()
+        while let Some((id,c,t))=self.fact_order.first().copied(){let key=(c,t);let expired=self.slots.get(&key).and_then(|s|s.facts.iter().find(|f|f.id==id).map(|f|(s,f))).is_none_or(|(s,f)|self.available.saturating_sub(f.available)>self.retention_ns && !s.pending.iter().any(|p|Self::relevant(p,f,self.local_capture_ns)));if !expired{break;}self.drop_fact(key,id,false);self.outcome("unclaimed packet fact age expiry");}self.drain_ready()
     }
     pub fn tick(&mut self,now:u64)->Vec<Estimate>{self.tick_with_model(now,&mut DamageModel::default())}
     pub fn clear_target_with_model(&mut self,context:u64,target:EntityKey,model:&mut DamageModel){let key=(context,target);while let Some(id)=self.slots.get(&key).and_then(|s|s.pending.front().map(|p|p.id)){self.resolve_one(key,id,Some("boundary retirement without actor support"),model);}if let Some(s)=self.slots.remove(&key){self.fact_capacity-=s.facts.capacity();self.pending_capacity-=s.pending.capacity();for f in s.facts{self.fact_order.remove(&(f.id,key.0,key.1));self.fact_count-=1;self.retain_orphan(target,f.at,f.kind);}}self.dirty.remove(&key);self.last_committed.remove(&key);}
@@ -347,7 +364,7 @@ impl Health{
     pub fn clear_with_model(&mut self,model:&mut DamageModel){while let Some(key)=self.slots.keys().next().copied(){self.clear_target_with_model(key.0,key.1,model);}}
     pub fn clear(&mut self){self.clear_with_model(&mut DamageModel::default());}
     pub(crate) fn retire_target(&mut self,target:EntityKey){let keys:Vec<_>=self.slots.keys().filter(|(_,t)|*t==target).copied().collect();for(c,t)in keys{self.clear_target(c,t);}}
-    pub fn flush_with_model(&mut self,model:&mut DamageModel)->Vec<Estimate>{self.clear_with_model(model);self.drain_ready()}
+    pub fn flush_with_model(&mut self,model:&mut DamageModel)->Vec<Estimate>{self.clear_with_model(model);self.attribution.release_explicit_holds();self.drain_ready()}
     pub fn flush(&mut self)->Vec<Estimate>{self.flush_with_model(&mut DamageModel::default())}
     pub fn resource_summary(&self)->Value{
         // Includes conservative container node allowances; not an RSS claim.

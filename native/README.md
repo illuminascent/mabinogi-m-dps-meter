@@ -1,8 +1,8 @@
 # Rust code guide
 
-Current source version: **0.2.2**, following the GitHub prerelease convention.
+Current source version: **0.2.3**, following the GitHub prerelease convention.
 The application and embedded capture code share version
-0.2.2, Windows file version is 0.2.2.0, and capture ABI remains 2.
+0.2.3, Windows file version is 0.2.3.0, and capture ABI remains 2.
 
 Read the [attribution contract](../docs/uniform-attribution-spec.md) before
 changing combat interpretation. The [root README](../README.md) covers use,
@@ -30,6 +30,7 @@ TCP input -> reassembly / wire observations -> Numeric -> Health -> Attribution
 | `core/src/meter.rs` | Atomic actor amounts and downstream encounter, target, owner and skill views |
 | `core/src/replay.rs`, `session.rs` | Production orchestration, retries, file replay and measurement boundaries |
 | `app/src` | Win32 UI, capture ownership, authenticated worker IPC and raw recording |
+| `app/src/research_window.rs`, `research.rs` | Native research epoch controls and shared raw recorder; no combat interpretation |
 | `capture/src` | Packet Monitor capture library and stable ABI |
 
 All actors follow the same interpretation path. Self selection, display names
@@ -81,8 +82,8 @@ known-source delivery rows at 1,024 each. Audit, model, clock, skill and tempora
 storage have additional fixed caps. Recording and downstream meter aggregates
 are independent; no disk index or spill extends the assignment working set.
 
-The current conservative inference ceiling is 9,671,560 bytes. The dedicated
-Windows pressure test measured 4,567,950 allocator-requested bytes, including
+The current conservative inference ceiling is 9,671,656 bytes. The dedicated
+Windows pressure test measured 4,568,709 allocator-requested bytes, including
 temporary allocations; neither number is whole-process RSS. Run
 `credit_bounds` and `causal_memory` when changing state layout or capacities.
 
@@ -106,6 +107,8 @@ New-Item -ItemType Directory -Force .local | Out-Null
 ./dist/mabi-meter.exe demo
 ./dist/mabi-meter.exe --ui-smoke .local/ui-smoke.json
 ./dist/mabi-meter.exe replay capture.jsonl --audit .local/replay-audit.json
+./scripts/build-research.ps1 -UseDocker
+./dist/mabi-research.exe --research-ui-smoke .local/research-ui-smoke.json
 ```
 
 Build/test commands use the locked offline dependencies after the explicit
@@ -114,6 +117,14 @@ build. `-LocalFixtures` requires private files under `.local/test-fixtures`;
 ordinary synthetic tests do not. Audit and UI smoke output paths must be new.
 System check, demo and UI smoke do not start live capture. Replay exit code 2
 means partial coverage, not necessarily a decoder failure.
+
+The research build enables `research-ui` to open native epoch controls by
+default. Only `dist/mabi-research.exe` is replaced; the validated meter stays
+in place. This EXE can be copied alone to another Windows PC with no Python,
+Tk or separate capture DLL. The native and legacy stdin controls share one raw
+recording session implementation. The research UI smoke uses synthetic commands
+and the actual recorder, checks Unicode labels/notes and close/save, and never
+starts the elevated worker. See the root README for cross-player collection.
 
 The optional capture DLL has its own excluded workspace/lockfile:
 
@@ -140,7 +151,7 @@ Direct Cargo commands require dependencies cached under their active
 Review the example's usage before running it. Offline collectors are not fed
 back into inference and are not live storage dependencies.
 
-The 0.2.2 implementation passed 295 private-inclusive Rust tests, 17 Windows
+The released 0.2.2 baseline passed 295 private-inclusive Rust tests, 17 Windows
 eligibility tests, allocation-pressure checks and all 16 retained replay inputs
 (14 original captures, world snapshot and completed town capture). Original
 capture hashes, frame counts and field census were preserved. Town incoming HP

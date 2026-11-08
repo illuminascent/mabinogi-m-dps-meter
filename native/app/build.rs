@@ -8,6 +8,9 @@ fn main(){
     let parts:Vec<u16>=version.split('.').map(|p|p.parse().expect("numeric release version")).collect();
     assert_eq!(parts.len(),3,"release version must have three components");
     let (major,minor,patch)=(parts[0],parts[1],parts[2]);
+    let research=env::var_os("CARGO_FEATURE_RESEARCH_UI").is_some();
+    let name=if research {"mabi-research"} else {"mabi-meter"};
+    let description=if research {"Mabinogi Mobile Research Capture"} else {"Mabinogi Mobile DPS Meter"};
     std::fs::write(&rc,format!(r#"1 ICON "{icon}"
 1 24 "{manifest}"
 1 VERSIONINFO
@@ -23,11 +26,11 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "FileDescription", "Mabinogi Mobile DPS Meter\0"
+      VALUE "FileDescription", "{description}\0"
       VALUE "FileVersion", "{version}.0\0"
-      VALUE "InternalName", "mabi-meter\0"
-      VALUE "OriginalFilename", "mabi-meter.exe\0"
-      VALUE "ProductName", "Mabinogi Mobile DPS Meter\0"
+      VALUE "InternalName", "{name}\0"
+      VALUE "OriginalFilename", "{name}.exe\0"
+      VALUE "ProductName", "{description}\0"
       VALUE "ProductVersion", "{version}\0"
     END
   END

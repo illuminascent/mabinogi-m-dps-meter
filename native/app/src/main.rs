@@ -5,6 +5,7 @@ mod wire;
 mod research;
 #[cfg(windows)] mod platform;
 #[cfg(windows)] mod live;
+#[cfg(windows)] mod research_window;
 
 #[cfg(windows)]
 mod window;
@@ -17,9 +18,20 @@ pub fn load(source: Source) -> Result<Replay> {
 }
 fn run() -> Result<i32> {
     let mut args = std::env::args_os().skip(1);
-    let mode = args.next().unwrap_or_else(|| "ui".into());
+    let mode = args.next().unwrap_or_else(|| if cfg!(feature="research-ui") { "research-ui".into() } else { "ui".into() });
     if mode == "--version" || mode == "-V" {
-        println!("mabi-meter {}",env!("CARGO_PKG_VERSION"));return Ok(0);
+        println!("{} {}",if cfg!(feature="research-ui") {"mabi-research"} else {"mabi-meter"},env!("CARGO_PKG_VERSION"));return Ok(0);
+    }
+    if mode == "research-ui" || mode == "--research-ui-smoke" {
+        let smoke = mode == "--research-ui-smoke";
+        let mut output = None;
+        let report = if smoke { Some(PathBuf::from(args.next().ok_or("Research UI smoke requires a new report path")?)) } else { None };
+        while let Some(arg) = args.next() {
+            if smoke || arg != "--output" || output.is_some() { return Err("research-ui accepts --output DIRECTORY".into()); }
+            output = Some(PathBuf::from(args.next().ok_or("--output requires DIRECTORY")?));
+        }
+        #[cfg(windows)] { research_window::run(output,report)?; return Ok(0); }
+        #[cfg(not(windows))] { let _ = (output,report); return Err("Research UI requires Windows".into()); }
     }
     if mode == "research" {
         let mut directory = None;
@@ -59,6 +71,7 @@ fn run() -> Result<i32> {
                   mabi-meter --check-system\n\
                   mabi-meter --version\n\
                   mabi-meter research [--output DIRECTORY] (JSON commands on stdin)\n\
+                  mabi-research research-ui [--output DIRECTORY] (native capture controls)\n\
                   UI starts live capture with administrator approval. Replay needs no elevation.");
         return Ok(0);
     }

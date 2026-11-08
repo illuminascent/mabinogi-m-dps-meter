@@ -50,7 +50,7 @@ impl Survey{
     pub fn owned_bytes(&self)->usize{std::mem::size_of::<Self>()+self.recent.capacity()*std::mem::size_of::<Observation>()}
     pub fn summary(&self)->Value{
         let c=&self.counts;json!({"format":"jp21196-raw-fields-v1","scope":"known wire prefix before legacy gates; not all-wire completeness",
-            "candidate":"checked raw@16 minus auxiliary@24; scoped HP reconciliation; raw meter amount retained; game mechanism unresolved",
+            "candidate":"checked raw@16 minus auxiliary@24; scoped HP reconciliation; original wire amount retained; explicit credit may remove proven terminal overkill; game mechanism unresolved",
             "seen":c.seen,"opaque":c.opaque,"short":c.short,"parsed":c.parsed,"outside_legacy_gate":c.outside_legacy_gate,"extended":c.extended,
             "zero_aux":c.zero_aux,"partial_aux":c.partial_aux,"equal_aux":c.equal_aux,"exceeds_raw":c.exceeds_raw,"out_of_range":c.out_of_range,
             "retained":self.recent.len(),"evicted":self.evicted,"record_capacity":EVIDENCE_CAPACITY,"owned_bytes":self.owned_bytes()})

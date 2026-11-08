@@ -1,9 +1,8 @@
 # Mabinogi Mobile DPS meter
 
-Latest prerelease: [v0.2.2](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.2).
-Version **0.2.2** adds bounded packet-level credit assignment, shared
-no-friendly-fire eligibility and idle-based fallback to the HP parsing and
-evidence retention introduced in v0.2.1. See the [Rust code guide](native/README.md) and
+Latest prerelease: [v0.2.3](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.3).
+Version **0.2.3**; Windows file version **0.2.3.0**; capture ABI **2**.
+See the [Rust code guide](native/README.md) and
 [attribution contract](docs/uniform-attribution-spec.md).
 
 A standalone Rust DPS meter for the Japanese Windows client. It passively reads
@@ -175,8 +174,8 @@ initial application boundary. Replay exit code 2 denotes partial coverage.
 
 ## Python DLL wrappers and tests
 
-The optional research UI below and the ctypes wrapper use Python. The meter
-itself remains a standalone Rust EXE. The wrapper in `src/mabi_dps/native.py`
+The optional legacy Tk research UI and the ctypes wrapper use Python. The meter
+and native research UI are standalone Rust EXEs. The wrapper in `src/mabi_dps/native.py`
 exposes the capture DLL's ABI structures, adapter identities,
 capture open/poll/close calls, and loss counters. The caller supplies approved
 TCP tuples. It does not provide a Python meter, GUI, replay decoder, automatic
@@ -197,22 +196,30 @@ capture. Meter and protocol regressions live in the Rust test suite.
 
 ## Focused research captures
 
-`scripts/capture_epochs.py` is a small, separate Tk UI for collecting evidence
-about missing teammate events and HP updates. It requires Python 3.12+ with Tk
-(included in the standard Windows installer). Capture, game discovery, UAC and
-ownership filtering use the existing Rust worker; no capture DLL is needed.
-Build the research backend without replacing your release meter:
+`mabi-research.exe` provides native Windows controls for collecting evidence
+about missing teammate events and HP updates, including comparisons between
+players. It is a **single standalone EXE**: no Python, Tk, capture DLL or extra
+runtime files are required. Capture, game discovery, UAC and ownership filtering
+use the existing Rust worker. Build it without replacing your release meter:
 
 ```powershell
 ./scripts/build-research.ps1 -UseDocker
-pythonw ./dist/capture-epochs.pyw
+./dist/mabi-research.exe
 ```
 
-Omit `-UseDocker` with a configured Windows Rust toolchain. You can also run
-`python ./scripts/capture_epochs.py`; `--backend PATH` selects the research EXE
-and `--output DIRECTORY` selects a parent folder for new sessions. The `.pyw`
-and `mabi-research.exe` in `dist` can be copied together to another Windows PC
-with Python and Tk installed.
+Omit `-UseDocker` with a configured Windows Rust toolchain. Copy just
+`dist/mabi-research.exe` to a writable folder on each player's Windows PC and
+double-click it. The native UI is the research build's default even if the EXE
+is renamed. `research-ui --output DIRECTORY` selects another recording parent:
+
+```powershell
+./dist/mabi-research.exe research-ui --output D:/captures
+```
+
+The optional `python ./scripts/capture_epochs.py` controls still work with
+Python 3.12+ and Tk; `--backend PATH` selects the research EXE. Its JSON stdin
+backend remains available as `mabi-research.exe research [--output DIRECTORY]`.
+Neither is needed by other players using the standalone window.
 
 1. Launch the research UI and approve UAC. Capture begins immediately when the
    game has an owned connection. Launch before entering the party/instance so
@@ -223,6 +230,16 @@ with Python and Tk installed.
    continue between epochs. Notes at start and end are both retained.
 4. Use **Quit and save** to drain pending traffic and finalize the session.
    Closing an active epoch marks its end. Sessions have the usual one-hour cap.
+
+For cross-player comparisons, run one copy on each PC, use matching epoch labels
+and record which player attacked and which observed. Keep each player's entire
+session folder separate and identify the player when collecting folders. Each
+PC records its own clock and command receipt times; matching labels do not
+synchronize clocks or make button clicks simultaneous. Align shared packet/event
+evidence during analysis before comparing timing or coverage.
+
+`mabi-research.exe --research-ui-smoke NEW_REPORT.json` checks native Start, End,
+Unicode notes and close/save using a synthetic recorder, without UAC or capture.
 
 Each session is a new folder under `dist/recordings/research` by default:
 

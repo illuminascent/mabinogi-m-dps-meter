@@ -4,13 +4,19 @@ Updated 2026-11-08, Asia/Tokyo.
 
 ## Current state
 
-Source and the validated local meter are **0.2.2**; Windows file version is
-0.2.2.0 and capture ABI remains 2. Release **v0.2.2** follows the GitHub prerelease
+Source and the validated meter revision are **0.2.3**; Windows file version is
+0.2.3.0 and capture ABI remains 2. Release **v0.2.3** follows the GitHub prerelease
 convention. The previous v0.2.1 baseline is commit
 `619bf40058d2727c2036d617344c1ae7ecb5f20b`; that release remains unchanged.
-The user explicitly authorized the commit, push and GitHub release for 0.2.2,
-superseding the earlier publication block. Building or publishing does not
+The user explicitly authorized committing on main, pushing and publishing the
+0.2.3 GitHub prerelease on 2026-11-08, superseding the earlier 0.2.2-only
+publication authorization. Building or publishing does not
 authorize live capture, terminating a running app, or future releases.
+
+The current source/EXE includes an explicit-overkill follow-up
+to released v0.2.2; the user requested the next patch revision, keeping major/minor
+at 0.2, so its version is 0.2.3 / 0.2.3.0. Earlier releases remain unchanged.
+Current artifact and validation evidence are recorded below.
 
 Read [native/README.md](native/README.md) for module ownership/build commands and
 [docs/uniform-attribution-spec.md](docs/uniform-attribution-spec.md) before damage
@@ -83,7 +89,7 @@ with distributions, correlations, competing models and actual packet evidence.
 
 ## Validation and artifacts
 
-The final 0.2.2 source passed **295 private-inclusive Rust tests**, **17 Windows
+The released 0.2.2 baseline passed **295 private-inclusive Rust tests**, **17 Windows
 eligibility tests**, dedicated allocation pressure, all 16 retained replay inputs,
 no-capture system check, demo (8,900 / six hits / 1,780 DPS), native UI stage 4 and actual
 application replay. Windows version resources were independently checked.
@@ -93,20 +99,50 @@ Original14 captures retain 48,273 explicit hits/585389332raw damage; no eligible
 source leaves 7,211,752 HP unattributed. Those overlapping inputs are regression
 evidence, not independent teammate ground truth.
 
-Conservative inference ceiling: **9,671,560 bytes**, below 10 MiB. Dedicated Windows
-allocator-requested saturation peak: **4,567,950 bytes**. These are not whole-process
+Current conservative inference ceiling: **9,671,656 bytes**, below 10 MiB. Dedicated Windows
+allocator-requested saturation peak: **4,568,709 bytes**. These are not whole-process
 RSS. Measure ordinary service and mass expiry separately; neither is network
 latency. Association 100 ms capture locality / 250 ms release-watermark retention are
 engineering policies, separate from the idle-split activity timeout.
 
 Validated local artifact: `dist/mabi-meter.exe`, SHA256
-`c7cd8ffabf8dfe8e33c1d7568606872fc33072b865b1f751d50db9c135325dd8`.
+`e4735e2559c59465bb32dc244d5cc95a2143a2b9b87b407c787df36bd9271498`.
 Only that dist EXE was replaced; do not promise deleted alternate binaries.
-Evidence/review: `.local/town-credit-20261108/validation.json`,
+Current evidence is `.local/explicit-overkill-20261108/`; the released baseline
+EXE hash was `c7cd8ffabf8dfe8e33c1d7568606872fc33072b865b1f751d50db9c135325dd8`.
+Released baseline evidence/review: `.local/town-credit-20261108/validation.json`,
 `binary-validation.json`, `implementation-report.txt`, `review.txt`,
 `replay-results.json`, `town-replay.json`, `windows-pressure-result.txt`.
 Earlier handoff history is archived locally at
 `.local/town-credit-20261108/AGENTS-before-documentation-commit.md`.
+
+Local research tooling now builds a standalone native epoch UI with
+`scripts/build-research.ps1` (`research-ui` Cargo feature). Copy only
+`dist/mabi-research.exe`; Python/Tk and a separate capture DLL are unnecessary.
+Native and legacy stdin controls share the raw recording session. Public Rust
+tests passed; the final EXE passed a synthetic native UI save cycle, Unicode
+notes, no-capture system check and Windows resource/import verification from
+an isolated folder with Python removed from its PATH. Live capture and a second
+PC were not tested. Evidence: `.local/research-standalone-20261108/validation-1794107867820384500.json`.
+The 0.2.3 research release asset passed a fresh portable no-Python save cycle,
+system check and version-resource verification. Evidence is in
+`.local/release-0.2.3/validation.json`.
+Research SHA256: `e8db6381ceaed5f2ae8c94d44eb450525b632af82838e45711bec026673cc983`.
+The validated meter EXE above retains its original hash. Cross-player sessions
+need matching labels and later event alignment; PC clocks are not synchronized
+by the tool. Its source and standalone EXE are included in the 0.2.3 release.
+
+Local 0.2.3 validation/evidence and domain notes are kept separately in
+`.local/explicit-overkill-20261108/report.txt` and `validation.json`; paired
+reference evidence is in `.local/cross-reference-20261108/`. Keep detailed
+domain findings and capture-analysis notes in local documents, not READMEs.
+
+The user confirmed on 2026-11-08 that the ten older `live-*.jsonl` inputs from
+the historical original14 corpus were intentionally pruned the previous night.
+Their absence is not pending recovery or validation. Use retained completed
+`dist/recordings/research` sessions (currently nine), plus retained private
+fixtures/world snapshot where appropriate. Historical reports do not establish
+that pruned raw files remain available or were replayed after pruning.
 
 ## Repository work
 
@@ -121,4 +157,4 @@ Use the locked offline build/test scripts in the README. Private tests require
 live capture. A reviewer requested to be fresh must start without inherited
 conversation history. Report scope and observed limits rather than a blanket
 accuracy/completeness claim. Commit/push/release are separate actions; the current
-authorization covers committing, pushing and publishing v0.2.2 only.
+authorization covers committing on main, pushing and publishing v0.2.3 only.

@@ -134,7 +134,11 @@ fn capacity_rejection_cannot_discard_already_committed_expired_allocations(){
     assert!(r.meter.registry.self_key.is_some());
     assert_eq!(changes,vec![2539237,1995596,3432913,2069622,3440374]);
     let r=Replay::load(&root.join("jp-identity-research-long-focused-tcp.jsonl"),None,false).unwrap();
-    assert_eq!(r.meter.raw_hits.len(),65);assert_eq!(r.meter.raw_hits.iter().map(|h|h.damage.amount as u128).sum::<u128>(),912305);
+    assert_eq!(r.meter.raw_hits.len(),65);
+    // Raw observation parity survives the new credited-overkill distinction.
+    let clipped=r.health.attribution.clipped_explicit_overkill;
+    assert_eq!(r.meter.raw_hits.iter().map(|h|h.damage.amount as u128).sum::<u128>()+clipped,912305);
+    assert_eq!(r.health.attribution.detected_explicit+clipped,912305);
     let ally:Vec<_>=r.meter.inferred_hits.iter().filter(|h|h.source.actor==1995609 && h.target.actor==1997639).collect();
     assert_eq!(ally.len(),34);assert_eq!(ally.iter().map(|h|h.damage.amount as u128).sum::<u128>(),114719);
 }

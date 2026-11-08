@@ -1,8 +1,11 @@
 [package]
 name = "mabi-meter"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 publish = false
+
+[features]
+research-ui = []
 
 [dependencies]
 mabi_meter_core = { path = "../core" }

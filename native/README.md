@@ -150,11 +150,3 @@ Direct Cargo commands require dependencies cached under their active
 
 Review the example's usage before running it. Offline collectors are not fed
 back into inference and are not live storage dependencies.
-
-The released 0.2.2 baseline passed 295 private-inclusive Rust tests, 17 Windows
-eligibility tests, allocation-pressure checks and all 16 retained replay inputs
-(14 original captures, world snapshot and completed town capture). Original
-capture hashes, frame counts and field census were preserved. Town incoming HP
-loss remains counted with zero bystander credit. These are regression results,
-not independent teammate-accuracy validation. Raw recordings and detailed local
-review/build evidence remain ignored.

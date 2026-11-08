@@ -18,121 +18,27 @@ other Windows builds and ARM64 have not been validated.
 
 ## Use
 
-Run `mabi-meter.exe` from a writable folder. The UI stays unprivileged and asks
-Windows UAC to start a capture worker using the same EXE. Use the game normally
-while the meter learns character identities. It creates a `recordings` folder
-beside the EXE for raw game TCP records, audits, metadata, and window settings.
+Run `mabi-meter.exe` from a writable folder and approve the Windows UAC request
+for its capture worker. Play normally while the meter learns character names.
+Recordings and window settings are saved in a `recordings` folder beside the EXE.
 
-- Choose an encounter, then select or search for a target. **All targets** stays
-  accessible in the sidebar.
-- New battle automatically selects the current encounter and All targets.
-- **Split** starts a new measurement while retaining learned identities, names,
-  and self attribution. It does not stop capture or reset packet warmup.
-- Encounters end after 15 seconds without self combat by default. The timeout
-  is editable. Close the window to stop capture; a session is capped at one hour.
-  This setting also controls how long a recent attacker remains eligible for
-  estimated damage. Presence and appearance messages do not refresh activity.
-- Joining an active fight pulls in retained earlier combat connected to the
-  joined actor or target: target to attackers, then attackers to other targets,
-  recursively. The encounter starts at that graph's earliest retained damage.
-  Links use full actor incarnations and the configured idle timeout; Split and
-  verified run boundaries prevent backtracking across them. Damage already
-  assigned to an archived encounter stays there. Backtracking is limited by the
-  retained history (65,536 explicit records and 65,536 HP allocations); eviction
-  of unassigned combat marks coverage partial.
+- Choose an encounter, then select or search for a target. **All targets** shows
+  the combined view. New encounters become the active view automatically.
+- Use **Split** to start a new measurement while keeping learned names and
+  character selection. Capture continues.
+- Edit the idle timeout to control when an encounter ends. The default is
+  15 seconds without your character's combat.
+- Right-click a source row to view its pets and skill breakdown.
+- Close the window to stop capture. Each recording session lasts at most one hour.
 
-The **Estimated** column identifies damage inferred from target HP changes and
-attack records. These amounts are included in displayed DPS and remain separate
-from explicit damage in audits. Primary functionality has been exercised in
-live play; inferred numerical accuracy still needs controlled in-game testing.
-Partial attachment, missing identity records, and capture loss remain visible.
-Current history is bounded at 32 encounters. Packet scene announcements are not
-treated as proof of a new instance.
+The **Estimated** column shows damage inferred from HP changes. It contributes
+to damage totals and DPS without adding observed hits or critical hits.
+Pets are grouped with their identified owner.
 
-Player tracking is independent of the damage rows in the selected encounter.
-The status line reports how many player identities are remembered for the
-session, including cached players from earlier rooms. Continuing actor bindings
-survive room refreshes and transport gaps; supported personal-state and profile
-records can resolve actor replacements without a new appearance announcement.
-Ambiguous replacements remain separate. Disk caches restore names, not current
-actors or self assignment.
-If entry omits personal state, a fresh exact UID can continue self after the old
-TCP connection verifiably closes. Replacements do not depend on display names.
-Operator assignment follows proven participant aliases and becomes unresolved
-when those aliases become ambiguous. Reused TCP tuples get separate connection
-lifetimes; delayed old identity records cannot replace a newer incarnation.
-
-After a TCP hole, the decoder retains complete later buffered messages and
-reacquires framing after the bounded wait. The missing bytes still mark coverage
-partial. Direct packet associations respect transport continuity; finite HP
-endpoints for the same actor can still supply an uncertain net decrease across
-the gap. This can recover observations older builds discarded with the suffix.
-
-Observed pets are grouped with their evidenced owner while their original actor
-references and separate contributions remain in the audit. Right-click a source
-row to see its pet contribution and skill breakdown, with explicit and estimated
-amounts separated. Unrecognized skill IDs retain their amounts; internal action
-names are used when observed, otherwise the numeric ID is shown.
-
-HP estimation reconciles eligible explicit impact before allocating the residual.
-The observed raw amount and checked raw-minus-auxiliary HP impact are retained as
-different quantities. All actors use the same packet-level analysis before owner,
-encounter or skill grouping. A bounded shared actor/ability/component model
-weights ambiguous allocations; estimated allocations never train that model.
-
-All attribution paths reject identical source/victim and confirmed friendly
-player-side pairs. Owned entities inherit that side only from a nonconflicting,
-confirmed player owner; an NPC or pet profile alone does not prove affiliation.
-Contradictory raw claims remain visible in diagnostics and cannot consume HP
-overlap or train the model.
-
-When stronger packet association is unavailable, the single fallback considers
-eligible recent attackers of that target within the configured idle timeout.
-It does not distribute damage among visible bystanders. No eligible attacker
-leaves an explicitly unattributed amount. Missing attack records do not prove HP
-loss false: some town NPC attacks cause real incoming damage without those
-records. Allocations do not increase observed hit or critical counts.
-
-Audit v5 records numeric observations, actor allocations, unattributed causes,
-publication receipts, ownership, skills and partial clock bounds. Pending
-known-source delivery survives consumer rejection; reset drains it before
-changing the measurement. Assignment uses bounded RAM with no disk spill or
-historical packet index. The conservative inference-storage ceiling is below
-10 MiB; independent recordings and accumulated meter results are separate.
-
-HP evidence is acknowledged before opcode, actor and key checks. Every framed
-body receives a structural classification; HP-shaped candidates retain a bounded
-preview and an interpretation outcome. Complete bodies remain in raw recordings,
-and audit history evictions are counted. An HP-shaped string remains an
-unconfirmed candidate.
-
-The JP common actor-status prefix supplies plain or protected HP and IV metadata.
-Updates share one length-prefixed scalar envelope across the six observed types.
-Uninterpreted status fields and the update trailer are retained without value
-gates. Actor generations, bounds, padding and numeric checks still apply before
-HP accounting. MAX sentinels do not participate in arithmetic and preserve the
-last finite comparison. Numeric decreases across continuity breaks remain
-eligible with uncertainty. Keys retained
-after gaps, and IVs declared only by plain status, carry conditional provenance.
-CBC padding does not authenticate a value. Decoding HP does not independently
-verify the source attribution of every teammate amount.
-
-Recoverable metadata errors degrade detail without abandoning later damage in
-the same extracted batch. A fatal decoder failure pauses semantic processing
-while raw recording continues. The status and saved metadata report that pause;
-already detected pending credit remains owned for delivery.
-
-Timeline evidence is partial. The decoder retains embedded clock candidates,
-unwraps counters within a compatible TCP direction, and separates apparent clock
-resets into epochs. Clock-bearing messages before and after an observation form
-provisional packet-order brackets. Incomplete brackets leave timing unknown;
-counter resets and bracket disagreements label uncertainty and exclude model
-training rather than discard HP budgets. Death-event timestamp and effect-instance
-creation-time candidates remain supporting evidence. Local association uses
-100 ms of original capture time and a 250 ms input-release watermark wait. These
-engineering policies are separate from the idle activity timeout and are not
-verified physical server-time bounds. Full server timing reconstruction and
-independent teammate accuracy remain open.
+The meter remembers up to 32 encounters. Joining a fight may include earlier
+combat retained in the current session. The status line reports remembered
+players and capture or decoder problems; partial coverage means some data may
+be missing.
 
 ## Build
 

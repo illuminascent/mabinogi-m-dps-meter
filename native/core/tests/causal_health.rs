@@ -15,8 +15,8 @@ fn unknown_notification_frequency_does_not_manufacture_actor_power(){
     for order in 2..65{h.attack(attack(1,99,order,0,10,0)).unwrap();}h.attack(attack(2,99,65,0,20,0)).unwrap();let a=h.flush();assert_eq!(a.iter().map(|a|(a.source.actor,a.amount)).collect::<Vec<_>>(),vec![(1,50),(2,50)]);
 }
 #[test]
-fn zero_impact_explicit_excludes_source_but_preserves_older_hp_loss(){
-    let mut h=Health::default();h.update(key(99),100,at(0,0)).unwrap();h.update(key(99),90,at(1,0)).unwrap();h.attack(attack(1,99,2,0,10,7)).unwrap();h.update(key(99),90,at(3,0)).unwrap();let mut flags=[0;7];flags[0]=7;h.explicit_fields(key(1),key(99),30,Some(0),flags,at(4,0)).unwrap();h.attack(attack(1,99,5,0,10,7)).unwrap();let a=h.flush();assert!(a.is_empty());assert_eq!((h.loss,h.explicit,h.allocated,h.unassigned),(10,0,0,10));
+fn zero_impact_after_a_later_hp_boundary_cannot_cancel_an_older_positive_hit(){
+    let mut h=Health::default();h.update(key(99),100,at(0,0)).unwrap();h.update(key(99),90,at(1,0)).unwrap();h.attack(attack(1,99,2,0,10,7)).unwrap();h.update(key(99),90,at(3,0)).unwrap();let mut flags=[0;7];flags[0]=7;h.explicit_fields(key(1),key(99),30,Some(0),flags,at(4,0)).unwrap();h.attack(attack(1,99,5,0,10,7)).unwrap();let a=h.flush();assert_eq!(a.len(),1);assert_eq!((a[0].source.actor,a[0].amount),(1,10));assert_eq!(a[0].frames,vec![2]);assert_eq!((h.loss,h.explicit,h.allocated,h.unassigned),(10,0,10,0));
 }
 #[test]
 fn sparse_mode_uses_common_units_for_trained_and_untrained_actors(){

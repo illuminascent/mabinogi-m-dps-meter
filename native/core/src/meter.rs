@@ -227,7 +227,6 @@ impl Meter {
     pub fn add_estimate(&mut self,h:Hit)->Result<()> { self.add_kind(h,true) }
     fn add_kind(&mut self,h:Hit,inferred:bool)->Result<()> {
         if !self.registry.damage_eligible(h.source,h.target){return Err("friendly-fire attribution rejected".into());}
-        if inferred && self.registry.inference_excluded(h.source){return Err("explicit-source HP attribution rejected".into());}
         self.credit_acceptance(h.source,inferred)?;
         // Capture totals/history accept every observed source. Encounter policy
         // only controls the selected measurement, never packet eligibility.

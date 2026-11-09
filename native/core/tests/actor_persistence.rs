@@ -263,7 +263,7 @@ fn recovered_old_personal_state_cannot_reactivate_a_superseded_actor(){
     r.internal_transition(100).unwrap();assert_eq!(r.meter.registry.self_key,Some(key));assert!(r.meter.registry.is_current(key));
     put64(&mut hp,12,90);feed(&mut r,&mut seq,10,170205,&hp,0);r.internal_transition(100).unwrap();
     put64(&mut hp,12,80);feed(&mut r,&mut seq,10,170205,&hp,0);feed(&mut r,&mut seq,10,20526,&a,0);r.finish();
-    assert_eq!(r.health.loss,20);assert_eq!(r.meter.session.estimated_total.damage,0);assert_eq!(r.health.unassigned,20);assert_eq!(r.meter.binding,1);
+    assert_eq!(r.health.loss,20);assert_eq!(r.meter.session.estimated_total.damage,20);assert_eq!(r.meter.binding,1);
 }
 #[test] fn changed_actor_in_same_socket_needs_a_verified_room_boundary_and_stable_identity(){
     let mut m=Meter::default();let c=char_id(0x0012_3456_0001);let old=m.registry.observe(1,1,50).unwrap();

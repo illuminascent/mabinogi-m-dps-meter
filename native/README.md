@@ -1,8 +1,9 @@
 # Rust code guide
 
-Current source version: **0.2.4**, a local build awaiting user acceptance.
-The application and embedded capture code share version
-0.2.4, Windows file version is 0.2.4.0, and capture ABI remains 2.
+Release **0.2.4 / Windows 0.2.4.0 / capture ABI 2** preserves released v0.2.3
+damage behavior and the UI/logging improvements. Explicit coverage is matched per
+event; actors with explicit records remain eligible for other implicit damage.
+Main selection and naming cannot establish actor-wide coverage.
 
 Read the [attribution contract](../docs/uniform-attribution-spec.md) before
 changing combat interpretation. The [root README](../README.md) covers use,
@@ -24,9 +25,9 @@ TCP input -> reassembly / wire observations -> Numeric -> Health -> Attribution
 | `core/src/damage_wire.rs`, `hp_evidence.rs` | Field retention, acknowledgment counters and diagnostic previews |
 | `core/src/numeric.rs` | Canonical same-object finite HP comparisons |
 | `core/src/identity.rs`, `identity/ownership.rs` | Actor incarnations, identity evidence, ownership and shared damage-side eligibility |
-| `core/src/health.rs` | Packet association, explicit/HP reconciliation and clean-anchor admission |
-| `core/src/combat.rs` | Existing action/state/skill evidence, partial clocks and constrained damage model |
-| `core/src/attribution.rs` | Sole allocator/fallback, recent attack history, unattributed causes and acknowledged delivery |
+| `core/src/health.rs` | Target-local packet association, explicit/HP reconciliation and clean-anchor admission |
+| `core/src/combat.rs` | Existing action/state/skill evidence, partial clocks and diagnostic impact model |
+| `core/src/attribution.rs` | Sole allocation/fallback, recent attack spans, unattributed causes and acknowledged delivery |
 | `core/src/meter.rs` | Atomic actor amounts and downstream encounter, target, owner and skill views |
 | `core/src/replay.rs`, `session.rs` | Production orchestration, retries, file replay and measurement boundaries |
 | `app/src` | Win32 UI, capture ownership, authenticated worker IPC and raw recording |
@@ -34,9 +35,9 @@ TCP input -> reassembly / wire observations -> Numeric -> Health -> Attribution
 | `app/src/research_window.rs`, `research.rs` | Native research epoch controls and shared raw recorder; no combat interpretation |
 | `capture/src` | Packet Monitor capture library and stable ABI |
 
-All actors follow the same packet interpretation path. Direct explicit sources
-and the identified main character are excluded from HP-derived allocation.
-Names and owner grouping cannot choose packet eligibility. Legacy `Health` returned
+All actors follow the same packet interpretation path. Explicit impact is matched
+per event; a source with explicit records remains eligible for other inferred
+damage. Names, main selection and owner grouping cannot choose packet eligibility. Legacy `Health` returned
 allocations are compatibility previews; production delivery consumes only the
 persistent Attribution outbox.
 
@@ -47,8 +48,10 @@ persistent Attribution outbox.
   Registry proof overrides bounded role-cache loss. Generic NPC/owned-entity
   labels do not establish faction; ownership conflicts revoke derived side proof.
 - Only actual attack or eligible finite explicit packets establish activity.
-  Fallback uses target-specific history and `Meter.idle_ns`, the editable idle
-  split setting. Appearance/name/HP/presence cannot refresh it. There is no
+  Target-specific activity history uses `Meter.idle_ns`, the editable idle
+  split setting. The remake retains eligible-active-attacker HP fallback; missing
+  presentation records and ambiguous hit amounts are not extra rejection rules.
+  Appearance/name/HP/presence cannot refresh it. There is no
   separate hot/warm multiplier or activity timeout.
 - Preserve true finite HP changes across transport gaps with uncertainty.
   Duplicate parallel observations are nonadditive; a canonical Initial cannot
@@ -84,9 +87,9 @@ known-source delivery rows at 1,024 each. Audit, model, clock, skill and tempora
 storage have additional fixed caps. Recording and downstream meter aggregates
 are independent; no disk index or spill extends the assignment working set.
 
-The current conservative inference ceiling is 9,747,528 bytes. The dedicated
-Windows pressure test measured 4,605,598 allocator-requested bytes, including
-temporary allocations; neither number is whole-process RSS. Run
+Inference storage is capped below 10 MiB. The dedicated pressure test measures
+allocator-requested bytes including temporary allocations; this is not process
+RSS. Current measurements are recorded in the handoff. Run
 `credit_bounds` and `causal_memory` when changing state layout or capacities.
 
 For per-target pending budgets P and facts F, one association resolution costs
@@ -101,6 +104,8 @@ From the repository root:
 
 ```powershell
 ./scripts/build-rust.ps1
+# If the standard EXE is running, build a separate acceptance candidate:
+./scripts/build-rust.ps1 -OutputName mabi-meter-0.2.4-remade.exe
 ./scripts/test-rust.ps1
 ./scripts/test-rust.ps1 -LocalFixtures
 New-Item -ItemType Directory -Force .local | Out-Null
@@ -148,6 +153,7 @@ Direct Cargo commands require dependencies cached under their active
 | `evaluate_causal CAPTURE` | Streaming interval/obligation checks, bounded-storage and service measurements |
 | `credit_bounds` | Conservative inference storage contract |
 | `audit_damage_fields` | Complete known-prefix field diagnostics |
+| `export_cross_reference CAPTURE NEW_EVENTS.jsonl NEW_AUDIT.json` | Offline packet/HP/interval export for paired comparisons |
 | `equal_share_census` | Historical equal-share reason-label census; not current fallback coverage |
 
 Review the example's usage before running it. Offline collectors are not fed

@@ -146,7 +146,6 @@ pub fn spawn(p:&[u8])->Option<Appearance> {
 
 #[derive(Clone, Debug, Default)]
 pub struct Metadata {
-    pub explicit_damage: bool,
     pub name: Option<String>, pub uid: Option<u64>, pub template: Option<String>,
     pub kind: Option<&'static str>,
     pub cached: bool, pub conflicting: bool,
@@ -181,12 +180,6 @@ impl Registry {
     }
     pub fn damage_eligible(&self,source:EntityKey,target:EntityKey)->bool {
         damage_eligible_sides(source,target,self.damage_side(source),self.damage_side(target))
-    }
-    pub fn inference_excluded(&self,key:EntityKey)->bool {
-        self.self_key==Some(key) || self.records.get(&key).is_some_and(|m|m.explicit_damage)
-    }
-    pub fn note_explicit_source(&mut self,key:EntityKey){
-        if let Some(m)=self.records.get_mut(&key){if !m.explicit_damage{m.explicit_damage=true;self.revision+=1;}}
     }
     pub fn note_observed(&mut self,key:EntityKey,at:crate::combat::Stamp){
         let t=self.timing.entry(key).or_default();t.first.get_or_insert(at);
@@ -454,7 +447,7 @@ impl Registry {
         let name = self.records.get(&key).filter(|m| !m.conflicting).and_then(|m| m.name.as_ref())
             .or_else(||if self.records.get(&key).is_some_and(|m|m.conflicting){None}else{self.records.get(&self.group(key)).filter(|m|!m.conflicting).and_then(|m|m.name.as_ref())});
         if let Some(n) = name { n.clone() }
-        else if self.self_key == Some(key) || (self.self_key.is_none() && self.records.get(&key).is_some_and(|m|m.explicit_damage) && self.owner(key).is_none()) { "<YOU>".into() }
+        else if self.self_key == Some(key) { "<YOU>".into() }
         else { "Name pending".into() }
     }
 }

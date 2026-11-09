@@ -1,4 +1,4 @@
-//! Explicit-source coverage must never gain a second HP-derived credit.
+//! Explicit coverage belongs to an event, never to an actor.
 use mabi_meter_core::{capture_file::Input,protocol,replay::Replay,identity::{EntityKey,Appearance},transport::{Flow,Segment}};
 fn key(actor:u32)->EntityKey{EntityKey{process:0,binding:1,actor,generation:1}}
 struct Run{r:Replay,seq:u32}
@@ -10,26 +10,23 @@ impl Run{
     fn raw(&mut self,source:u64,n:u64,t:u64){let mut p=[0;53];p[..8].copy_from_slice(&source.to_le_bytes());p[8..16].copy_from_slice(&999u64.to_le_bytes());p[16..24].copy_from_slice(&n.to_le_bytes());self.feed(21196,&p,t);}
     fn finish(&mut self){self.r.finish();assert!(self.r.semantic_error.is_none());let a=self.r.health.attribution.audit();assert_eq!(a["invariant"],true);assert_eq!(a["by_origin"]["explicit"]["invariant"],true);assert_eq!(a["by_origin"]["inferred"]["invariant"],true);assert_eq!(self.r.numeric.detected,self.r.health.explicit+self.r.health.allocated+self.r.health.unassigned);}
 }
-#[test]fn partial_and_zero_explicit_leave_hp_residual_unattributed(){
-    for amount in [0,4]{let mut x=Run::new();x.hp(100,0);x.hp(90,1);x.attack(101,1);x.raw(101,amount,1);x.finish();assert_eq!(x.r.meter.session.total.damage,amount as u128);assert_eq!(x.r.meter.session.estimated_total.damage,0);assert_eq!(x.r.health.unassigned,10-amount as u128);assert_eq!(x.r.meter.registry.label(key(101)),"<YOU>");assert_eq!(x.r.meter.registry.self_key,None);}
+#[test]fn partial_and_zero_explicit_preserve_the_same_actors_hp_residual(){
+    for amount in [0,4,10]{let mut x=Run::new();x.hp(100,0);x.hp(90,1);x.attack(101,1);x.raw(101,amount,1);x.finish();assert_eq!(x.r.meter.session.total.damage,amount as u128);assert_eq!(x.r.meter.session.estimated_total.damage,10-amount as u128);assert_eq!(x.r.health.unassigned,0);assert_eq!(x.r.meter.registry.label(key(101)),"Name pending");assert_eq!(x.r.meter.registry.self_key,None);}
 }
-#[test]fn mixed_support_allocates_only_to_peer(){
-    let mut x=Run::new();x.hp(100,0);x.hp(80,1);x.attack(101,1);x.attack(202,1);x.raw(101,4,1);x.finish();assert_eq!(x.r.meter.session.estimates.len(),1);assert_eq!(x.r.meter.session.estimates[&key(202)].damage,16);assert_eq!(x.r.health.unassigned,0);
+#[test]fn explicit_event_does_not_suppress_a_later_implicit_event_under_role_cache_pressure(){
+    let mut x=Run::new();x.raw(101,4,0);for actor in 1000..1700{x.r.meter.registry.observe(0,1,actor).unwrap();}x.hp(100,1_000_000_000);x.attack(101,1_000_000_001);x.hp(90,1_000_000_002);x.finish();assert_eq!(x.r.meter.session.total.damage,4);assert_eq!(x.r.meter.session.estimates[&key(101)].damage,10);assert_eq!(x.r.health.unassigned,0);
 }
-#[test]fn explicit_coverage_applies_to_later_targets_and_survives_role_cache_pressure(){
-    let mut x=Run::new();x.raw(101,4,0);for actor in 1000..1700{x.r.meter.registry.observe(0,1,actor).unwrap();}x.hp(100,1_000_000_000);x.attack(101,1_000_000_001);x.hp(90,1_000_000_002);x.finish();assert_eq!(x.r.meter.session.estimated_total.damage,0);assert_eq!(x.r.health.unassigned,10);
+#[test]fn main_selection_does_not_change_authoritative_actor_credits(){
+    let run=|main:Option<u32>|{let mut x=Run::new();for actor in [101,202]{x.r.meter.registry.observe(0,1,actor).unwrap();}x.r.meter.registry.assign(main.map(key)).unwrap();x.hp(100,0);x.hp(80,1);x.attack(101,1);x.raw(101,4,1);x.attack(202,1);x.hp(70,1_000_000_000);x.finish();(x.r.meter.session.sources.iter().map(|(k,v)|(*k,v.damage)).collect::<Vec<_>>(),x.r.meter.session.estimates.iter().map(|(k,v)|(*k,v.damage)).collect::<Vec<_>>(),x.r.health.unassigned)};
+    let baseline=run(None);assert_eq!(baseline.2,0);assert_eq!(baseline.1.iter().map(|(_,v)|*v).sum::<u128>(),26);for main in [101,202]{assert_eq!(run(Some(main)),baseline);}
 }
-#[test]fn identified_main_character_is_excluded_before_first_explicit(){
-    let mut x=Run::new();let me=x.r.meter.registry.observe(0,1,101).unwrap();x.r.meter.registry.assign(Some(me)).unwrap();x.hp(100,0);x.attack(101,1);x.hp(90,1);x.finish();assert_eq!(x.r.meter.session.estimated_total.damage,0);assert_eq!(x.r.health.unassigned,10);assert_eq!(x.r.meter.registry.label(me),"<YOU>");
+#[test]fn named_ids_are_hidden_and_only_supported_self_is_you(){
+    let mut x=Run::new();x.r.meter.registry.appearance(0,1,Appearance{actor:101,name:"Alice".into(),uid:Some(123),template:None,offset:0,record_reference:None}).unwrap();x.raw(101,4,0);assert_eq!(x.r.meter.registry.label(key(101)),"Alice");let pending=x.r.meter.registry.observe(0,1,202).unwrap();x.raw(202,2,0);assert_eq!(x.r.meter.registry.label(pending),"Name pending");x.r.meter.registry.assign(Some(pending)).unwrap();assert_eq!(x.r.meter.registry.label(pending),"<YOU>");
 }
-#[test]fn names_hide_ids_and_pet_coverage_is_separate_from_owner(){
-    let mut x=Run::new();x.r.meter.registry.appearance(0,1,Appearance{actor:101,name:"Alice".into(),uid:Some(123),template:None,offset:0,record_reference:None}).unwrap();x.raw(101,4,0);assert_eq!(x.r.meter.registry.label(key(101)),"Alice");let pending=x.r.meter.registry.observe(0,1,202).unwrap();assert_eq!(x.r.meter.registry.label(pending),"Name pending");
-    x.r.meter.registry.owned_spawn(0,1,mabi_meter_core::identity::ownership::Spawn{actor:303,owner:101,template:9,outer:None,kind:4},mabi_meter_core::identity::tracking::Evidence{frame:1,timestamp_ns:0,origin:mabi_meter_core::identity::tracking::EvidenceOrigin::Semantic}).unwrap();x.raw(303,2,0);x.hp(100,1);x.attack(303,2);x.hp(90,2);x.finish();assert_eq!(x.r.meter.session.estimated_total.damage,0);assert_eq!(x.r.health.unassigned,10);
+#[test]fn owned_source_with_partial_explicit_coverage_retains_other_implicit_damage(){
+    let mut x=Run::new();x.r.meter.registry.observe(0,1,101).unwrap();x.r.meter.registry.owned_spawn(0,1,mabi_meter_core::identity::ownership::Spawn{actor:303,owner:101,template:9,outer:None,kind:4},mabi_meter_core::identity::tracking::Evidence{frame:1,timestamp_ns:0,origin:mabi_meter_core::identity::tracking::EvidenceOrigin::Semantic}).unwrap();x.hp(100,0);x.hp(90,1);x.attack(303,1);x.raw(303,2,1);x.finish();assert_eq!(x.r.meter.session.total.damage,2);assert_eq!(x.r.meter.session.estimates[&key(303)].damage,8);assert_eq!(x.r.health.unassigned,0);
 }
-#[test]fn sentinel_does_not_establish_explicit_coverage(){
-    let mut x=Run::new();x.raw(101,u64::MAX,0);x.hp(100,1);x.attack(101,2);x.hp(90,2);x.finish();assert_eq!(x.r.meter.session.estimated_total.damage,10);assert!(!x.r.meter.registry.inference_excluded(key(101)));
-}
-#[test]fn queued_inferred_credit_is_rejected_after_direct_evidence_arrives(){
+#[test]fn queued_inference_survives_an_unrelated_explicit_event_from_the_same_source(){
     let mut x=Run::new();let source=x.r.meter.registry.observe(0,1,101).unwrap();let target=x.r.meter.registry.observe(0,1,999).unwrap();let at=mabi_meter_core::combat::Stamp{process:0,context:2,continuity:0,frame:1,order:1,timestamp_ns:1,tcp_byte:0};
-    x.r.health.attribution.resolve_budget(target,at,1,10,&[mabi_meter_core::attribution::Candidate{source,skill:None,weight:1.0,frames:vec![1]}],"test");let leased=x.r.health.front_credit().unwrap();x.r.meter.registry.note_explicit_source(source);x.r.retry_pending_credits().unwrap();assert_eq!(x.r.meter.session.estimated_total.damage,0);assert_eq!(x.r.health.attribution.unattributed_inferred,10);assert_eq!(x.r.health.attribution.queued_amount(),0);assert!(leased.id>0);assert_eq!(x.r.health.attribution.audit()["invariant"],true);
+    x.r.health.attribution.note_relationship(source,target,at);x.r.health.attribution.resolve_budget(target,at,1,10,&[],"test active fallback");let leased=x.r.health.front_credit().unwrap();x.raw(101,4,1_000_000_000);x.r.finish();assert!(x.r.semantic_error.is_none());assert_eq!(x.r.health.attribution.audit()["invariant"],true);assert_eq!(x.r.meter.session.estimated_total.damage,10);assert_eq!(x.r.meter.session.total.damage,4);assert_eq!(x.r.health.attribution.unattributed_inferred,0);assert_eq!(x.r.health.attribution.queued_amount(),0);assert!(leased.id>0);
 }

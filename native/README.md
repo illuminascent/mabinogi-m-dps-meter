@@ -167,7 +167,7 @@ requires an independent baseline application audit and checks damage assignments
 skills, origins, HP accounting and unattributed causes. For a small offline run:
 
 ```powershell
-./dist/mabi-meter-0.2.4-remade.exe replay capture.jsonl --audit .local/baseline.json
+./dist/mabi-meter.exe replay capture.jsonl --audit .local/baseline.json
 # Run export_cross_reference with capture.jsonl .local/events.jsonl .local/observed.json
 python scripts/audit-hit-counts.py --events .local/events.jsonl --audit .local/observed.json --baseline-audit .local/baseline.json --output .local/hit-counts.json
 python -m unittest discover -s scripts/tests -v

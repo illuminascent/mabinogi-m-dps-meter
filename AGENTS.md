@@ -10,12 +10,27 @@ This supersedes the earlier acceptance-only/publication-blocked instructions.
 No future release, live capture or termination of user apps is authorized.
 
 Current source/meter is **0.2.5 / Windows 0.2.5.0 / capture ABI 2**. Canonical local
-meter: dist/mabi-meter.exe after publication cleanup. Approved meter SHA256:
+meter: dist/mabi-meter.exe. Approved meter SHA256:
 6792071692d4842ed9f4e0c59e49f35cbf7dc8825f49a2e63e10080fd3227547.
 The remade v0.2.4 release meter SHA256 is:
 025c4c33c4e08eef459f9d6d94a906f519cc4919e6440e404d3a03449e4b3ba3.
 The existing research EXE and optional capture DLL are unchanged; research remains
 available from v0.2.3. Their independent code/build path remains supported.
+
+Published prereleases: [v0.2.4](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.4)
+at a3719ed65ab2eb2b2cd6dda1efce4985e69da029 and
+[v0.2.5](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.5)
+at a7f62f1f3d9650ed740999d5a9717482c35ed577. Both meter/checksum assets were
+anonymously downloaded and verified; previous releases/tags remain unchanged.
+Publication authority is fulfilled; no later release is authorized.
+
+Cleanup removed 27 superseded/portable/release-comparison EXE/DLL copies
+(89,910,138 bytes). dist now contains one current meter, the unchanged research
+EXE and optional capture DLL. Build/dependency caches, recordings and the user's
+running desktop meter were preserved. Historical local artifact paths in old
+validation reports may no longer exist; retain hashes and redownload from the
+corresponding GitHub release when required. Cleanup inventory and remote metadata
+are ignored under .local/publish-0.2.4-0.2.5-20261109/.
 
 ## Current behavior
 

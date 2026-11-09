@@ -34,6 +34,7 @@ recordings/
 *.pcapng
 *.etl
 *.jsonl
+*.mrec
 *-audit.json
 *.audit.json
 *.meta.json

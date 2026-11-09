@@ -1,5 +1,7 @@
 //! Offline-first Rust meter core. No capture initialization or UI dependencies.
 pub mod capture_file;
+pub mod recording;
+pub mod recording_session;
 pub mod identity;
 pub mod meter;
 pub mod protocol;

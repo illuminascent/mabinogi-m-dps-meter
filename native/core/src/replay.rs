@@ -688,6 +688,9 @@ impl Replay {
         self.process=epoch;self.meter.event(Event::ProcessReplacement{evidence:epoch})
     }
     pub fn load(path: &Path, port: Option<u16>, aligned: bool) -> Result<Self> {
+        if path.extension().is_some_and(|s|s.eq_ignore_ascii_case("mrec")) {
+            return crate::recording_session::load(path,aligned);
+        }
         let mut replay = Self::new(aligned); capture_file::read(path,port,|input| replay.feed(input))?;
         replay.finish(); Ok(replay)
     }

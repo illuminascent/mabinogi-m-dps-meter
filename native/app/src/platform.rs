@@ -9,6 +9,7 @@ impl Drop for Owned {fn drop(&mut self){unsafe{if !self.0.is_null() && self.0 as
 #[repr(C)] struct ProcessEntry {size:u32,usage:u32,pid:u32,heap:usize,module:u32,threads:u32,parent:u32,priority:i32,flags:u32,name:[u16;260]}
 #[repr(C)] pub struct Security {pub length:u32,pub descriptor:Handle,pub inherit:i32}
 #[link(name="kernel32")] extern "system" {
+    fn GetLocalTime(time:*mut [u16;8]);
     pub fn CloseHandle(h:Handle)->i32;
     pub fn GetLastError()->u32;
     fn CreateToolhelp32Snapshot(flags:u32,pid:u32)->Handle;
@@ -28,6 +29,12 @@ impl Drop for Owned {fn drop(&mut self){unsafe{if !self.0.is_null() && self.0 as
     pub fn PeekNamedPipe(h:Handle,buffer:Handle,size:u32,read:*mut u32,available:*mut u32,left:*mut u32)->i32;
     pub fn ReadFile(h:Handle,buffer:*mut u8,size:u32,read:*mut u32,overlapped:Handle)->i32;
     pub fn WriteFile(h:Handle,buffer:*const u8,size:u32,written:*mut u32,overlapped:Handle)->i32;
+}
+/// Windows local wall-clock time for user-facing filenames; absolute Unix time
+/// is also retained in the recording. Neither clock is a server event timestamp.
+pub fn local_timestamp()->String {
+    let mut time=[0u16;8];unsafe{GetLocalTime(&mut time);}
+    format!("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}.{:03}",time[0],time[1],time[3],time[4],time[5],time[6],time[7])
 }
 #[link(name="iphlpapi")] extern "system" {
     fn GetExtendedTcpTable(table:Handle,size:*mut u32,order:i32,family:u32,class:u32,reserved:u32)->u32;

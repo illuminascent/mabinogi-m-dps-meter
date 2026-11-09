@@ -1,7 +1,10 @@
 # Uniform packet attribution contract
 
-2026-11-09. Release 0.2.5 / Windows 0.2.5.0 / capture ABI 2. The user accepted and
-authorized commit, push and GitHub prerelease publication of 0.2.4 and 0.2.5.
+2026-11-09. Release 0.2.6 / Windows 0.2.6.0 / capture ABI 2.
+The user-approved v0.2.4 and v0.2.5 prereleases are published and their downloads
+hash-verified. That publication authority is fulfilled; it does not authorize a
+future release. The user separately authorized commit, push and prerelease
+publication of 0.2.6. See AGENTS.md for exact release commits, artifacts and evidence.
 Damage interpretation preserves released v0.2.3 and remade v0.2.4 behavior. Explicit
 and implicit are evidence categories, not main-versus-other actor categories.
 An explicit record cannot exclude its actor's other damage or identify local self.
@@ -13,7 +16,9 @@ an app. Keep detailed domain findings local and limit claims to retained evidenc
 
 The user requested one best Hits number, without estimated/incomplete markers.
 Rows and encounter summary combine explicit records and post-commit inferred attack
-counts. Distinct current supported observations count individually, including
+counts. Existing audit `hits` fields remain explicit-credit counts; `display_hits`
+drives the UI. Crit continues to use explicit hits rather than the displayed total.
+Distinct current supported observations count individually, including
 identical notification bodies. Explicit overlap counts once. Sparse evidence uses
 one per distinct source/target HP obligation; receipt retries and delivery chunks
 cannot add hits. Late explicit evidence can replace an inferred contribution.
@@ -34,6 +39,14 @@ The read-only audit and export tools cannot feed new weights or constraints back
 into the damage resolver. Current evidence and bounded storage are in AGENTS.md.
 
 ## Scope and invariants
+
+0.2.6 replaces only the meter's unpinned recording format.
+Accepted research JSONL logs remain compatible. OS-timestamped encounter entries
+share lossless raw context inside a session folder; labels, scenario hints,
+compression and recorded session controls cannot change damage interpretation,
+eligibility, inference storage, activity or encounter membership. Recording remains
+outside the inference working set. Independently exporting raw evidence must not
+require trusting the combat parser. See native/README.md for format and recovery.
 
 Packet interpretation precedes owner, encounter and ability grouping. Every actor
 uses the same rules. There is one allocation/fallback implementation. Detected
@@ -146,6 +159,10 @@ Numeric retains 1,024 baselines. Health retains 1,024 slots, 1,024 pending budge
 preview/scratch. Attribution retains 512 side records, 1,024 activity relationships,
 1,024 outbox rows and 1,024 known-source delivery rows, 16 frame references per credit.
 Existing bounded Combat/Timeline/model and 512 pending ability refinements remain.
+The post-commit hit counter adds fixed limits of 1,024 seen-observation rows and
+1,024 fallback keys. Its conservative ceiling is 204,880 bytes, included in the
+combined 9,876,536-byte inference ceiling. Neither is a whole-process RSS bound;
+recording, transport/identity diagnostics and downstream aggregates are separate.
 Pressure may coarsen target/time/ability/flags/hit count, retaining source and
 origin in delivery debt. A final storage-capacity failure has a separate counted
 amount; it is never mislabeled cold and never assigns an arbitrary bystander.
@@ -172,14 +189,18 @@ estimates into training truth or justify adding unobserved overkill to HP loss.
 Test all direct/modeled/fallback/retry/pressure paths, player/pet combinations,
 raw conflict without HP overlap/training, later identity and cache eviction,
 idle boundary/config changes, appearance-only cold state, gaps, later-attack
-overwrite, immutable receipts and full-outbox reset. Replay all retained completed
-research captures, the retained world snapshot and relevant private fixtures with
-their hashes/frame/raw-field counts. The user confirmed on 2026-11-08 that the ten
+overwrite, immutable receipts and full-outbox reset. Inventory and replay the available stable
+research/live inputs, retained world snapshot and relevant private fixtures, keeping
+hashes, frame counts and raw-field census. The 0.2.5 release corpus was nine completed
+research sessions, seven live files and the world snapshot (17 inputs). One live
+file ended with a pipe error; equivalence covers the retained prefix, not an absent
+tail. Do not silently drop incomplete inputs or treat an active growing file as a
+completed recording. Future files are outside the old release manifest. The user confirmed on 2026-11-08 that the ten
 older `live-*.jsonl` inputs in the historical original14 corpus were deliberately
-pruned; their absence is not a pending recovery task. Use current research
-recordings for current validation. Preserve true numeric HP denominator and
+pruned; their absence is not a pending recovery task. Use the current retained corpus for new validation. Preserve true numeric HP denominator and
 report unattributed causes.
 Build Windows app, system check without capture, demo, UI smoke and app replay;
-update only dist/mabi-meter.exe. No release, commit, push or live capture follows
-from local validation. Unknown affiliations and bounded-history accuracy remain
+keep the canonical meter at dist/mabi-meter.exe. If it is running, use a separate
+build filename without stopping the app. Validation alone does not authorize
+commit, push, publication, live capture or app termination. Unknown affiliations and bounded-history accuracy remain
 limitations; no assertion of universal packet completeness or teammate accuracy.

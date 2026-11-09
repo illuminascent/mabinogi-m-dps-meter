@@ -4,6 +4,7 @@ use std::path::PathBuf;
 mod wire;
 mod research;
 mod diagnostics;
+mod encounter_recording;
 #[cfg(windows)] mod platform;
 #[cfg(windows)] mod live;
 #[cfg(windows)] mod research_window;
@@ -22,6 +23,25 @@ fn run() -> Result<i32> {
     let mode = args.next().unwrap_or_else(|| if cfg!(feature="research-ui") { "research-ui".into() } else { "ui".into() });
     if mode == "--version" || mode == "-V" {
         println!("{} {}",if cfg!(feature="research-ui") {"mabi-research"} else {"mabi-meter"},env!("CARGO_PKG_VERSION"));return Ok(0);
+    }
+    if mode == "recording" {
+        let action=args.next().ok_or("recording requires inspect, export or pack")?;
+        let input=PathBuf::from(args.next().ok_or("recording requires an input file")?);
+        let output=args.next().map(PathBuf::from);
+        if args.next().is_some() {return Err("Unexpected recording option".into());}
+        if action=="dump" && output.is_none() {
+            let stdout=std::io::stdout();let mut out=std::io::BufWriter::new(stdout.lock());
+            let summary=mabi_meter_core::recording_session::dump(&input,&mut out)?;
+            use std::io::Write;
+            out.flush().map_err(|e|e.to_string())?;eprintln!("{}",summary.json());return Ok(0);
+        }
+        let result=match action.to_str() {
+            Some("inspect") if output.is_none()=>mabi_meter_core::recording_session::inspect(&input)?,
+            Some("export")=>mabi_meter_core::recording_session::export(&input,&output.ok_or("export requires a new directory")?)?,
+            Some("pack")=>mabi_meter_core::recording_session::pack(&input,&output.ok_or("pack requires a new .mrec file")?)?,
+            _=>return Err("usage: recording inspect FILE.mrec | dump FILE.mrec | export FILE.mrec NEW_DIRECTORY | pack RAW.jsonl NEW.mrec".into()),
+        };
+        println!("{}",serde_json::to_string_pretty(&result).map_err(|e|e.to_string())?);return Ok(0);
     }
     if mode == "research-ui" || mode == "--research-ui-smoke" {
         let smoke = mode == "--research-ui-smoke";
@@ -68,6 +88,10 @@ fn run() -> Result<i32> {
     if mode == "--help" || mode == "-h" {
         println!("mabi-meter ui [--demo | --replay FILE] [--port N] [--assume-aligned]\n\
                   mabi-meter replay FILE [--port N] [--assume-aligned] [--audit FILE]\n\
+                  mabi-meter recording inspect FILE.mrec\n\
+                  mabi-meter recording dump FILE.mrec\n\
+                  mabi-meter recording export FILE.mrec NEW_DIRECTORY\n\
+                  mabi-meter recording pack RAW.jsonl NEW.mrec\n\
                   mabi-meter demo\n\
                   mabi-meter --check-system\n\
                   mabi-meter --version\n\

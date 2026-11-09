@@ -1,5 +1,27 @@
 use std::{env,path::PathBuf,process::Command};
 fn main(){
+    // Content identity works in offline Docker builds without a mounted .git.
+    // This is a reproducibility fingerprint, not a cryptographic authenticity check.
+    let source_root=PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).parent().unwrap().to_path_buf();
+    let mut files=Vec::new();
+    fn gather(root:&std::path::Path,files:&mut Vec<PathBuf>){
+        for entry in std::fs::read_dir(root).expect("source fingerprint directory") {
+            let p=entry.expect("source fingerprint entry").path();
+            if p.is_dir(){gather(&p,files);}else{files.push(p);}
+        }
+    }
+    for part in ["core/src","core/data","app/src","app/assets","capture/src"] {gather(&source_root.join(part),&mut files);}
+    for part in ["Cargo.toml","Cargo.lock","core/Cargo.toml","app/Cargo.toml","app/build.rs","capture/Cargo.toml"] {files.push(source_root.join(part));}
+    files.push(source_root.parent().unwrap().join("assets/data/combat-names.json"));
+    files.sort();let mut fingerprint=0xcbf29ce484222325u64;
+    for path in files {
+        println!("cargo:rerun-if-changed={}",path.display());
+        let relative=path.strip_prefix(source_root.parent().unwrap()).unwrap().to_string_lossy().replace('\\',"/");
+        for b in relative.as_bytes().iter().copied().chain([0]).chain(std::fs::read(&path).expect("source fingerprint input")) {
+            fingerprint=(fingerprint^u64::from(b)).wrapping_mul(0x100000001b3);
+        }
+    }
+    println!("cargo:rustc-env=MABI_SOURCE_FINGERPRINT=fnv1a64:{fingerprint:016x}");
     println!("cargo:rerun-if-changed=assets/app.ico");println!("cargo:rerun-if-changed=assets/app.manifest");
     let target=env::var("TARGET").unwrap();if !target.contains("windows"){return;}
     let root=PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());let out=PathBuf::from(env::var("OUT_DIR").unwrap());

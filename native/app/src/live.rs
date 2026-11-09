@@ -259,9 +259,10 @@ pub fn research_session(output:Option<PathBuf>,commands:Receiver<Result<serde_js
 pub fn controller(commands:Receiver<Command>,acks:SyncSender<Ack>,updates:Updates,seconds:u64,wait_after:bool)->Result<()> {
     let mut replay=Replay::new(false);replay.live_scope=true;replay.meter.automatic_encounters=true;
     let directory=data_dir()?;std::fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
-    let stem=format!("live-{}-{}",now_ns()/1_000_000_000,hex(&random()?[..4]));let path=directory.join(format!("{stem}.jsonl"));
-    let mut record=std::io::BufWriter::new(std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e|e.to_string())?);
-    let mut session=Session::new(replay,Some(directory.join("identity-cache.json")));let mut metadata=Vec::new();
+    let local=local_timestamp();
+    let path=directory.join(format!("{local}_session-{}",hex(&random()?[..4])));
+    let mut session=Session::new(replay,Some(directory.join("identity-cache.json")));
+    let mut record=crate::encounter_recording::Recorder::new(&path,&mabi_meter_core::recording_session::start(&session.replay,now_ns(),env!("CARGO_PKG_VERSION"),env!("MABI_SOURCE_FINGERPRINT")))?;
     crate::diagnostics::record("info","recording_started",&path.to_string_lossy());
     if let Some(warning)=&session.cache_warning{crate::diagnostics::record("warning","identity_cache_load",warning);}
     *updates.lock().unwrap()=Some(session.replay.meter.snapshot());
@@ -269,7 +270,13 @@ pub fn controller(commands:Receiver<Command>,acks:SyncSender<Ack>,updates:Update
     let mut last_publish=Instant::now()-Duration::from_secs(1);let mut last_status=String::new();let mut decoder_logged=false;let start=Instant::now();let mut stopping=false;
     let outcome=(||->Result<()>{loop {
         loop {match commands.try_recv(){
-            Ok(c)=>{let ack=session.command(c);crate::diagnostics::command(&ack);acks.try_send(ack).map_err(|_|"UI acknowledgement queue is full")?;},
+            Ok(c)=>{
+                record.event(&serde_json::json!({"type":"command","observed_ns":now_ns(),"command":mabi_meter_core::recording_session::command_json(&c)}))?;
+                let ack=session.command(c);
+                record.event(&serde_json::json!({"type":"command_result","id":ack.id,"applied":ack.applied,"reason":ack.reason}))?;
+                record.observe(&session.replay,&local_timestamp(),now_ns())?;
+                crate::diagnostics::command(&ack);acks.try_send(ack).map_err(|_|"UI acknowledgement queue is full")?;
+            },
             Err(TryRecvError::Empty)=>break,Err(TryRecvError::Disconnected)=>{if !stopping{pipe.send(&wire::envelope(2,8,&[])?)?;stopping=true;}break;}
         }}
         let mut received=false;
@@ -277,44 +284,62 @@ pub fn controller(commands:Receiver<Command>,acks:SyncSender<Ack>,updates:Update
             match kind {
                 2=>{let v:serde_json::Value=serde_json::from_slice(data).map_err(|e|e.to_string())?;let next=v["epoch"].as_u64().ok_or("Missing ownership epoch")?;
                     if next<=epoch{return Err("Non-increasing ownership epoch".into());}
-                    if !first{session.process_recorded(next);}first=false;epoch=next;metadata.push(v);
+                    record.event(&serde_json::json!({"type":"ownership","observed_ns":now_ns(),"data":v}))?;
+                    if !first{session.process_recorded(next);}first=false;epoch=next;
+                    record.observe(&session.replay,&local_timestamp(),now_ns())?;
                 },
                 3=>{let (batch_epoch,segments)=wire::decode_segments(data)?;if batch_epoch!=epoch{return Err("Packet ownership epoch mismatch".into());}
                     for s in segments {
-                        let line=serde_json::json!({"timestamp_ns":s.timestamp_ns,"src":s.flow.src,"sport":s.flow.sport,"dst":s.flow.dst,"dport":s.flow.dport,"seq":s.seq,"syn":s.syn,"fin":s.fin,"rst":s.rst,"ack":s.ack,"payload_hex":hex(&s.payload)});
-                        serde_json::to_writer(&mut record,&line).map_err(|e|e.to_string())?;record.write_all(b"\n").map_err(|e|e.to_string())?;
+                        record.segment(epoch,&s)?;
                         session.feed_recorded(Input::Segment(s));
+                        record.observe(&session.replay,&local_timestamp(),now_ns())?;
                     }
                 },
-                4=>{let status=String::from_utf8(data.to_vec()).map_err(|e|e.to_string())?;if status!=last_status{crate::diagnostics::record("info","capture_status",&status);last_status=status;}},
+                4=>{let status=String::from_utf8(data.to_vec()).map_err(|e|e.to_string())?;if status!=last_status{
+                    record.event(&serde_json::json!({"type":"capture_status","observed_ns":now_ns(),"status":status}))?;
+                    crate::diagnostics::record("info","capture_status",&status);last_status=status;}},
                 5=>{let detail=String::from_utf8(data.to_vec()).map_err(|e|e.to_string())?;let code=detail.split(':').next().unwrap_or("capture_report").to_string();
                     crate::diagnostics::record("warning","capture_report",&detail);
                     let reset=code=="capture_handover"||code=="packet_rejected";
-                    let line=serde_json::json!({"type":"loss","code":code,"detail":detail,"reset_streams":reset});
-                    serde_json::to_writer(&mut record,&line).map_err(|e|e.to_string())?;record.write_all(b"\n").map_err(|e|e.to_string())?;session.feed_recorded(Input::Loss{code,reset});
+                    let line=serde_json::json!({"type":"loss","code":code,"detail":detail,"reset_streams":reset,"observed_ns":now_ns()});
+                    record.event(&line)?;session.feed_recorded(Input::Loss{code,reset});
                 },
-                6=>{terminal=true;break;},
-                7=>return Err(String::from_utf8_lossy(data).into_owned()),_=>return Err("Unsupported capture message".into())
+                6=>{
+                    if data.len()!=8{return Err("Invalid capture completion report".into());}
+                    record.event(&serde_json::json!({"type":"ownership_summary","unowned_segments_discarded":u64::from_le_bytes(data.try_into().unwrap())}))?;
+                    terminal=true;break;
+                },
+                7=>{
+                    let error=String::from_utf8_lossy(data).into_owned();
+                    record.event(&serde_json::json!({"type":"capture_error","observed_ns":now_ns(),"error":error}))?;
+                    return Err(error);
+                },_=>return Err("Unsupported capture message".into())
             }
         }
         // Advance the same capture-clock watermark used by the ownership
         // holdback, rather than aging queued packets against controller time.
-        session.tick_recorded(now_ns().saturating_sub(wire::OWNERSHIP_HOLDBACK_MS*1_000_000));
-        if !decoder_logged{if let Some(error)=&session.decoding_error{crate::diagnostics::error("decoder_paused",error);decoder_logged=true;}}
+        let watermark=now_ns().saturating_sub(wire::OWNERSHIP_HOLDBACK_MS*1_000_000);
+        record.tick(watermark)?;session.tick_recorded(watermark);
+        record.observe(&session.replay,&local_timestamp(),now_ns())?;
+        if !decoder_logged{if let Some(error)=&session.decoding_error{
+            record.event(&serde_json::json!({"type":"decoder_paused","observed_ns":now_ns(),"error":error}))?;
+            crate::diagnostics::error("decoder_paused",error);decoder_logged=true;}}
         if last_publish.elapsed()>=Duration::from_millis(200)||terminal {
-            *updates.lock().unwrap()=Some(session.replay.meter.snapshot());last_publish=Instant::now();record.flush().map_err(|e|e.to_string())?;
+            *updates.lock().unwrap()=Some(session.replay.meter.snapshot());last_publish=Instant::now();record.flush()?;
         }
         if terminal{break;}
         if unsafe{WaitForSingleObject(worker_handle.0,0)}==0 && !received{return Err("Capture worker exited without final acknowledgement".into());}
         if start.elapsed()>Duration::from_secs(seconds+100){return Err("Capture controller deadline exceeded".into());}sleep();
     }Ok(())})();
-    if let Err(error)=&outcome{crate::diagnostics::error("capture_controller",error);session.replay.reset_inference();}session.replay.finish();record.flush().map_err(|e|e.to_string())?;
+    record.event(&serde_json::json!({"type":"decoder_finish","reset_inference":outcome.is_err()}))?;
+    if let Err(error)=&outcome{crate::diagnostics::error("capture_controller",error);session.replay.reset_inference();}session.replay.finish();
     let cache_error=session.cache_path.as_ref().and_then(|path|mabi_meter_core::identity::cache::save(&session.replay.meter.registry,path).err());
     if let Some(error)=&cache_error{crate::diagnostics::error("identity_cache_save",error);}
     crate::diagnostics::record("info","recording_finished",if terminal{"Capture finished; recordings saved"}else{"Capture interrupted; recording saved"});
     *updates.lock().unwrap()=Some(session.replay.meter.snapshot());
-    let meta=serde_json::json!({"format":"mabi-dps-rust-live-v1","ownership_epochs":metadata,"completed":terminal,"error":outcome.as_ref().err(),"decoder_error":session.decoding_error,"cache_error":cache_error,"capture_file":path.file_name().map(|p|p.to_string_lossy())});
-    std::fs::write(directory.join(format!("{stem}.meta.json")),serde_json::to_vec_pretty(&meta).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    std::fs::write(directory.join(format!("{stem}.audit.json")),serde_json::to_vec_pretty(&session.replay.audit()).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    record.event(&serde_json::json!({"type":"final_snapshot","snapshot":mabi_meter_core::replay::snapshot_json(&session.replay.meter.snapshot())}))?;
+    record.event(&serde_json::json!({"type":"session_end","observed_ns":now_ns(),"completed":terminal,
+        "error":outcome.as_ref().err(),"decoder_error":session.decoding_error,"cache_error":cache_error}))?;
+    record.finish(&session.replay,&local_timestamp(),now_ns(),terminal)?;
     if outcome.is_ok() && wait_after {while let Ok(c)=commands.recv(){let ack=session.command(c);crate::diagnostics::command(&ack);if acks.send(ack).is_err(){break;}}}outcome
 }

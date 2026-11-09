@@ -1,10 +1,13 @@
 # Mabinogi Mobile DPS meter
 
-Latest prerelease: [v0.2.5](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.5).
-Version **0.2.5 / Windows 0.2.5.0 / capture ABI 2**. Hits includes inferred attacks;
+Latest prerelease: [v0.2.6](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.6).
+Version **0.2.6 / Windows 0.2.6.0 / capture ABI 2**. Compact encounter recordings
+preserve raw research evidence and session replay. Hits includes inferred attacks;
 damage interpretation preserves v0.2.3 behavior. See [the Rust guide](native/README.md)
 and [attribution contract](docs/uniform-attribution-spec.md).
-The unchanged [standalone research tool is available from v0.2.3](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.3).
+Download `mabi-meter.exe` and `SHA256SUMS.txt` from the release page. Releases 0.2.4
+through 0.2.6 contain the meter and its checksum. The unchanged standalone research
+tool is available from [v0.2.3](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.3).
 
 A standalone Rust DPS meter for the Japanese Windows client. It passively reads
 game-owned TCP traffic through Windows Packet Monitor and displays each
@@ -25,6 +28,25 @@ Recordings and window settings are saved in a `recordings` folder beside the EXE
 Application errors and capture diagnostics are written there as
 `meter-*.log.jsonl`; the meter has no status footer.
 
+Version 0.2.6 saves compact **encounter logs** in a session folder, replacing the
+meter's older recording format. Filenames use the PC's local
+OS date/time, an observed internal scenario name when available, and the encounter
+number. Keep the whole folder: encounter entries share its compressed
+`context.mrec`, which preserves raw TCP bytes and session controls once. Unknown
+locations use `unknown-instance`. Names are descriptive hints and do not split
+encounters or affect damage. Accepted research logs and the research tool's
+JSONL output are unchanged.
+
+```powershell
+./dist/mabi-meter.exe replay recordings/SESSION/ENCOUNTER.mrec --audit new-audit.json
+./dist/mabi-meter.exe recording inspect recordings/SESSION/ENCOUNTER.mrec
+./dist/mabi-meter.exe recording export recordings/SESSION/ENCOUNTER.mrec new-research-folder
+```
+
+Replay reconstructs the recorded session and selects that encounter. Export
+produces `traffic.jsonl`, `events.jsonl` and `session.meta.json` for research;
+it retains the full shared traffic, including warm-up.
+
 - Choose an encounter, then select or search for a target. **All targets** shows
   the combined view. New encounters become the active view automatically.
 - Use **Split** to start a new measurement while keeping learned names and
@@ -36,10 +58,8 @@ Application errors and capture diagnostics are written there as
 
 The **Estimated** column shows damage inferred from HP changes. It contributes
 to damage totals and DPS. **Hits** shows the best combined count of explicit
-and inferred attacks; **Crit** uses explicit records.
-Explicit and implicit damage are reconciled without treating an explicit record
-as complete coverage of its actor.
-Pets are grouped with their identified owner.
+and inferred attacks; **Crit** uses explicit records. Pets are grouped with
+their identified owner.
 
 The meter remembers up to 32 encounters. Joining a fight may include earlier
 combat retained in the current session. Capture and decoder diagnostics are
@@ -79,7 +99,7 @@ cargo test --manifest-path native/capture/Cargo.toml --offline --locked
 ```
 
 `--check-system` probes APIs and game process ownership without starting capture.
-Replay accepts TCP JSONL or classic PCAP; PCAP requires `--port NUMBER`.
+Replay accepts `.mrec`, TCP JSONL or classic PCAP; PCAP requires `--port NUMBER`.
 No game port is hardcoded. `--assume-aligned` is only for captures with a known
 initial application boundary. Replay exit code 2 denotes partial coverage.
 
@@ -152,7 +172,8 @@ evidence during analysis before comparing timing or coverage.
 `mabi-research.exe --research-ui-smoke NEW_REPORT.json` checks native Start, End,
 Unicode notes and close/save using a synthetic recorder, without UAC or capture.
 
-Each session is a new folder under `dist/recordings/research` by default:
+Each session is a new folder under `recordings/research` beside the research EXE
+(`dist/recordings/research` for a local build):
 
 | File | Contents |
 | --- | --- |
@@ -188,8 +209,8 @@ The files contain private game traffic and remain ignored by Git.
 | `native/core/data` | Embedded JP protocol lookup map |
 | `native/capture` | Our Packet Monitor library, linked directly into the Rust EXE |
 | `src/mabi_dps` | Python ctypes capture DLL wrapper |
-| `scripts` | Windows build/test entry points and optional Python epoch capture UI |
-| `tests` | Python DLL wrapper, ABI and research UI tests |
+| `scripts` | Locked build/test entry points, offline comparison/hit audits and optional Python epoch controls |
+| `tests`, `scripts/tests` | Python DLL/research controls and synthetic offline-audit tests |
 | `assets/data` | Embedded combat lookup labels; provenance is in `assets/provenance.json` |
 
 Private capture-based Rust tests use ignored files in `.local/test-fixtures`.

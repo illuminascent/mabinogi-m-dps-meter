@@ -43,6 +43,21 @@ pub fn json_record(line: &[u8]) -> Result<Input> {
 pub fn read(path: &Path, port: Option<u16>, mut consume: impl FnMut(Input) -> Result<()>) -> Result<()> {
     let mut reader = BufReader::new(File::open(path).map_err(|e| e.to_string())?);
     match path.extension().and_then(|s| s.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("mrec") => {
+            let mut ended=false;let mut completed=false;
+            let summary=crate::recording::read(path,|record| {
+                match record {
+                    crate::recording::Record::Segment {segment,..}=>consume(Input::Segment(segment))?,
+                    crate::recording::Record::Event(v) if v["type"]=="loss"=>consume(json_record(&serde_json::to_vec(&v).map_err(|e|e.to_string())?)?)?,
+                    crate::recording::Record::Event(v) if v["type"]=="session_end"=>{ended=true;completed=v["completed"]==true;},
+                    _=>(),
+                }Ok(())
+            })?;
+            if !ended || !completed || summary.incomplete_tail {
+                consume(Input::Loss {code:"recording_incomplete".into(),reset:false})?;
+            }
+            Ok(())
+        },
         Some("jsonl") => {
             let mut number = 0;
             loop {
@@ -58,7 +73,7 @@ pub fn read(path: &Path, port: Option<u16>, mut consume: impl FnMut(Input) -> Re
             Ok(())
         }
         Some("pcap" | "cap") => pcap(&mut reader,port.filter(|p| *p != 0).ok_or("PCAP requires --port")?,consume),
-        _ => Err("expected .jsonl or classic .pcap".into()),
+        _ => Err("expected .mrec, .jsonl or classic .pcap".into()),
     }
 }
 fn exact(r: &mut impl Read, p: &mut [u8]) -> Result<()> { r.read_exact(p).map_err(|e| e.to_string()) }

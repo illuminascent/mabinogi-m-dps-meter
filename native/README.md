@@ -259,7 +259,7 @@ ordinary synthetic tests do not. Audit and UI smoke output paths must be new.
 System check, demo and UI smoke do not start live capture. Replay exit code 2
 means partial coverage, not necessarily a decoder failure.
 
-The distributed research tool is still v0.2.3; meter releases 0.2.4/0.2.5 contain
+The distributed research tool is still v0.2.3; meter releases 0.2.4/0.2.5/0.2.6 contain
 only the meter and checksums. Rebuilding research from this tree stamps the current
 package version, and does not reproduce the historical asset byte for byte.
 

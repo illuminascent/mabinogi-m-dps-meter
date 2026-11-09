@@ -10,13 +10,14 @@ validation journals are historical. Read [native/README.md](native/README.md) an
 | --- | --- | --- |
 | [v0.2.4](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.4) | `a3719ed65ab2eb2b2cd6dda1efce4985e69da029` | `025c4c33c4e08eef459f9d6d94a906f519cc4919e6440e404d3a03449e4b3ba3` |
 | [v0.2.5](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.5) | `a7f62f1f3d9650ed740999d5a9717482c35ed577` | `6792071692d4842ed9f4e0c59e49f35cbf7dc8825f49a2e63e10080fd3227547` |
+| [v0.2.6](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.6) | `5149d4e3154367b927da2359743dae4e650d3520` | `30c6dbbf87ec1466a0a5940a18edd658c4d3246701ff3a6c11a8f082e07daf14` |
 
 The frozen numerical baseline is released v0.2.3 at
 `3e6124254fd8b636dd8717c440cfe79ca7633e3e`, meter SHA256
 `e4735e2559c59465bb32dc244d5cc95a2143a2b9b87b407c787df36bd9271498`.
 Its local comparison copies were cleaned; use its release asset when needed.
 
-Both prereleases contain `mabi-meter.exe` and `SHA256SUMS.txt`. Anonymous downloads
+All three prereleases contain `mabi-meter.exe` and `SHA256SUMS.txt`. Anonymous downloads
 were hash-verified; older releases and tags were preserved. Subsequent docs-only
 main commits do not change the runtime source identified by these tags.
 
@@ -24,18 +25,21 @@ The user accepted, authorized and completed commit/push/publication of these two
 versions and cleanup of redundant workspace binaries. That authority is fulfilled;
 it does not authorize another release, live capture or termination of user apps.
 
-The user has now separately cleared commit, push and GitHub prerelease publication
-of the validated 0.2.6 recording revision. This scoped publication is pending;
-it does not authorize live capture, stopping user apps or further releases.
+The user separately cleared commit, push and GitHub prerelease publication of the
+validated 0.2.6 recording revision. That publication is completed and its anonymous
+downloads are hash-verified. This authority is fulfilled; it does not authorize
+live capture, stopping user apps or further releases. Older releases and tags
+were preserved. Subsequent documentation commits do not change the tagged runtime.
 
 ## Current local artifacts and cleanup
 
-- `dist/mabi-meter.exe`: published **0.2.5 / Windows 0.2.5.0 / capture ABI 2**,
-  matching the v0.2.5 meter hash above.
-- `dist/mabi-meter-0.2.6.exe`: unreleased user-requested recording revision,
+- `dist/mabi-meter.exe`: published **0.2.6 / Windows 0.2.6.0 / capture ABI 2**,
+  matching the v0.2.6 meter hash above. The prior published 0.2.5 EXE was preserved
+  at `.local/publish-0.2.6-20261109/previous-mabi-meter-0.2.5.exe` before replacement.
+- `dist/mabi-meter-0.2.6.exe`: retained versioned copy of the published revision,
   **0.2.6 / Windows 0.2.6.0 / capture ABI 2**, SHA256
   `30c6dbbf87ec1466a0a5940a18edd658c4d3246701ff3a6c11a8f082e07daf14`.
-  Built separately; the published canonical meter and research EXE are unchanged.
+  Byte-identical to the canonical meter. The research EXE remains unchanged.
 - `dist/mabi-research.exe`: unchanged published **0.2.3** standalone research tool,
   SHA256 `e8db6381ceaed5f2ae8c94d44eb450525b632af82838e45711bec026673cc983`.
   It remains downloadable from v0.2.3 and is not duplicated in the newer releases.
@@ -47,7 +51,7 @@ Cleanup removed **27** superseded/portable/comparison EXE/DLL copies
 (**89,910,138 bytes**), including the withdrawn drafts and historical local release
 asset copies. The temporary release worktree was removed. Build/dependency caches,
 recordings and the user's running desktop meter were preserved. The canonical
-meter was the only meter EXE after that cleanup; the new 0.2.6 candidate is also
+meter was the only meter EXE after that cleanup; the versioned 0.2.6 copy is also
 retained now. Do not use deleted `*-remade`, `*-acceptance`
 or `*-hits` paths from old reports as current artifact locations.
 
@@ -70,8 +74,8 @@ evicted by the unchanged 32-encounter bound use their last retained prefix.
 Raw export stays independent of the combat parser. No automatic giant audit
 sidecar; regenerate with replay. No existing recording is migrated or removed.
 Research writer, wire interpretation and allocation policy remain unchanged.
-Publication of this validated revision is now authorized and pending; the exact
-candidate hash above is the release artifact. Validation: 335 private-inclusive Rust tests, 22 focused native
+This validated revision is published at the exact source commit and artifact hash
+above. Validation: 335 private-inclusive Rust tests, 22 focused native
 Windows tests, 24 Python tests, actual meter/research UI smoke, demo, resource
 version and no-capture system check. Ten currently available corpus inputs
 (nine research sessions and world snapshot) preserve all TCP fields/bytes and
@@ -81,8 +85,8 @@ new live journal overhead is additional and depends on the session. Seven old
 top-level meter inputs disappeared during this work and were not recovered or
 counted as tested. The research logs remain present and hash-verified unchanged.
 Evidence is `.local/recording-20261109/`. See native/README.md for the binary
-format and exact limitations. No live capture, app termination, commit, push
-or publication was performed for this revision.
+format and exact limitations. Publication/tag/download/canonical-artifact evidence
+is `.local/publish-0.2.6-20261109/`. No live capture or app termination was performed.
 
 Remade 0.2.4 preserves released v0.2.3 damage interpretation. Explicit and implicit
 are evidence categories, not main-versus-other actor categories. One explicit record
@@ -146,7 +150,8 @@ All evidence below stays local and ignored:
 | Frozen remade 0.2.4 numerical baseline and input manifest | `.local/damage-equivalence-0.2.5-20261109/` (`manifest.json`, `baseline-results.json`) |
 | Remade 0.2.4 and paired-reference validation | `.local/remake-0.2.4-20261109/` |
 | Earlier read-only reconstruction study, not a pending implementation plan | `.local/hit-count-audit-20261109/` |
-| Unreleased 0.2.6 recording, version, tests, raw roundtrip and full audit comparison | `.local/recording-20261109/` (`artifact.json`, `tests.json`, `corpus.json`, `smoke.json`, `report.txt`) |
+| 0.2.6 recording validation before publication: version, tests, raw roundtrip and full audit comparison | `.local/recording-20261109/` (`artifact.json`, `tests.json`, `corpus.json`, `smoke.json`, `report.txt`) |
+| 0.2.6 source proof, publication, preserved releases and anonymous download hashes | `.local/publish-0.2.6-20261109/` (`source-proof.json`, `commit.json`, `publication.json`, `canonical.json`) |
 
 An extreme inferred total in an older live input already occurs in released 0.2.3
 and is preserved in 0.2.5. Its cause remains a separate open investigation; see

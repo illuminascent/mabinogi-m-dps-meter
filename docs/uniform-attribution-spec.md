@@ -1,10 +1,9 @@
 # Uniform packet attribution contract
 
-2026-11-09. Release 0.2.6 / Windows 0.2.6.0 / capture ABI 2.
-The user-approved v0.2.4 and v0.2.5 prereleases are published and their downloads
+2026-11-09. Published release 0.2.6 / Windows 0.2.6.0 / capture ABI 2.
+The user-approved v0.2.4, v0.2.5 and v0.2.6 prereleases are published and their downloads
 hash-verified. That publication authority is fulfilled; it does not authorize a
-future release. The user separately authorized commit, push and prerelease
-publication of 0.2.6. See AGENTS.md for exact release commits, artifacts and evidence.
+future release. See AGENTS.md for exact release commits, artifacts and evidence.
 Damage interpretation preserves released v0.2.3 and remade v0.2.4 behavior. Explicit
 and implicit are evidence categories, not main-versus-other actor categories.
 An explicit record cannot exclude its actor's other damage or identify local self.

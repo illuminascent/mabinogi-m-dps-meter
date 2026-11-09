@@ -23,21 +23,23 @@ pub struct Hit { pub timestamp_ns: u64, pub source: EntityKey, pub target: Entit
 #[derive(Clone,Debug)]
 pub struct HitAssignment(Arc<HitMembership>);
 #[derive(Debug)]
-struct HitMembership { encounter:AtomicU64, skill:AtomicU64, boundary:u64 }
+struct HitMembership { encounter:AtomicU64, skill:AtomicU64, display_hits:AtomicU64, boundary:u64 }
 impl HitAssignment {
     pub fn encounter(&self)->Option<u64> { match self.0.encounter.load(Ordering::Relaxed) {0=>None,id=>Some(id)} }
     fn recorded_skill(&self)->Option<Option<u32>> {
         match self.0.skill.load(Ordering::Relaxed) {0=>None,1=>Some(None),n=>Some(Some((n-2) as u32))}
     }
+    pub fn display_hits(&self)->u64 {self.0.display_hits.load(Ordering::Relaxed)}
     fn set_skill(&self,skill:Option<u32>) {self.0.skill.store(skill.map_or(1,|s|s as u64+2),Ordering::Relaxed);}
 }
 #[derive(Clone, Default, Debug)]
-pub struct Aggregate { pub damage: u128, pub hits: u64,pub allocations:u64, pub flags: [u64;5], pub start: Option<u64>, pub end: Option<u64> }
+pub struct Aggregate { pub damage: u128, pub hits: u64,pub allocations:u64,pub inferred_hits:u64, pub flags: [u64;5], pub start: Option<u64>, pub end: Option<u64> }
 impl Aggregate {
     fn merge(&mut self, other: &Self) {
         // Every term is a disjoint subset of the already checked view total.
         self.damage = self.damage.checked_add(other.damage).expect("view damage conservation");
         self.hits = self.hits.checked_add(other.hits).expect("view hit conservation");
+        self.inferred_hits=self.inferred_hits.saturating_add(other.inferred_hits);
         self.allocations=self.allocations.checked_add(other.allocations).expect("allocation conservation");
         for (a,b) in self.flags.iter_mut().zip(other.flags) { *a = a.checked_add(b).expect("view flag conservation"); }
         if let Some(t) = other.start { self.start = Some(self.start.map_or(t,|old| old.min(t))); }
@@ -54,7 +56,7 @@ impl Aggregate {
     }
     fn credit(&mut self,h:&Hit,inferred:bool)->Result<()> {
         self.add(h)?;
-        if inferred {self.hits-=1;self.allocations=self.allocations.checked_add(1).ok_or("allocation overflow")?;}
+        if inferred {self.hits-=1;self.inferred_hits=self.inferred_hits.saturating_add(1);self.allocations=self.allocations.checked_add(1).ok_or("allocation overflow")?;}
         Ok(())
     }
     pub fn duration(&self) -> f64 { self.end.unwrap_or(0).saturating_sub(self.start.unwrap_or(0)) as f64 / 1e9 }
@@ -69,7 +71,7 @@ impl Encounter { fn new(id: u64) -> Self { Self { id,state: EncounterState::Idle
 
 #[derive(Clone,Debug)]
 pub struct Row {
-    pub key: EntityKey, pub label: String, pub damage: u128, pub hits: u64,
+    pub key: EntityKey, pub label: String, pub damage: u128, pub hits: u64, pub display_hits:u64,
     pub dps: Option<f64>, pub share: f64, pub critical_rate: f64, pub named: bool, pub is_self: bool,
     pub assignment_key: Option<EntityKey>,
     pub estimated_damage:u128,pub explicit_hits:u64,
@@ -79,6 +81,7 @@ pub struct Row {
 pub struct SkillRow {pub id:Option<u32>,pub label:String,pub explicit:u128,pub estimated:u128}
 #[derive(Clone,Debug)]
 pub struct Snapshot {
+    pub display_hits:u64,
     pub remembered_players:usize,
     pub revision: u64, pub identity_revision: u64, pub encounter: u64,
     pub target: Option<EntityKey>, pub summary: Aggregate, pub source_count: usize,
@@ -174,6 +177,26 @@ impl Meter {
     pub fn last_hit_assignment(&self,inferred:bool)->Option<HitAssignment>{
         (if inferred{&self.inferred_encounters}else{&self.raw_encounters}).back().cloned()
     }
+    /// Optional hit-count metadata. It never changes damage, flags, receipts,
+    /// encounter membership, admission, revision or publication progress.
+    pub fn set_display_hits(&mut self,source:EntityKey,target:EntityKey,assignment:&HitAssignment,count:u64){
+        let old=assignment.display_hits();if old==count{return;}
+        let adjust=|a:&mut Aggregate|{a.inferred_hits=a.inferred_hits.saturating_sub(old).saturating_add(count);};
+        adjust(&mut self.session.estimated_total);
+        if let Some(a)=self.session.estimates.get_mut(&source){adjust(a);}
+        self.adjust_encounter_hits(source,target,assignment.encounter(),old,count);
+        assignment.0.display_hits.store(count,Ordering::Relaxed);
+    }
+    fn adjust_encounter_hits(&mut self,source:EntityKey,target:EntityKey,encounter:Option<u64>,old:u64,count:u64){
+        if let Some(e)=encounter.and_then(|id|self.encounters.get_mut(&id)){
+            for key in [None,Some(target)]{if let Some(v)=e.views.get_mut(&key){
+                if let Some(a)=v.estimates.get_mut(&source){
+                    a.inferred_hits=a.inferred_hits.saturating_sub(old).saturating_add(count);
+                    v.estimated_total.inferred_hits=v.estimated_total.inferred_hits.saturating_sub(old).saturating_add(count);
+                }
+            }}
+        }
+    }
     pub fn attribute_recorded_skill(&mut self,h:&Hit,assignment:&HitAssignment,skill:Option<u32>,inferred:bool)->Result<()> {
         if assignment.recorded_skill().is_some(){return Err("hit skill already attributed".into());}
         self.attribute_skill(h,assignment.encounter().unwrap_or(0),skill,inferred)?;
@@ -236,7 +259,7 @@ impl Meter {
         self.latest_combat_ns=self.latest_combat_ns.max(h.timestamp_ns);
         let history=if inferred { &mut self.inferred_hits } else { &mut self.raw_hits };
         let tags=if inferred{&mut self.inferred_encounters}else{&mut self.raw_encounters};
-        let assignment=HitAssignment(Arc::new(HitMembership{encounter:AtomicU64::new(0),skill:AtomicU64::new(0),boundary:self.combat_boundary}));
+        let assignment=HitAssignment(Arc::new(HitMembership{encounter:AtomicU64::new(0),skill:AtomicU64::new(0),display_hits:AtomicU64::new(u64::from(inferred)),boundary:self.combat_boundary}));
         let evicted=if history.len() == MAX_RAW_HITS { history.pop_front();self.evicted_hits += 1;tags.pop_front() }else{None};
         history.push_back(h.clone());tags.push_back(assignment.clone());self.revision+=1;
         if evicted.is_some_and(|a|a.encounter().is_none() && a.0.boundary==self.combat_boundary){
@@ -346,6 +369,7 @@ impl Meter {
             .filter(|(h,a,_)|a.encounter().is_none() && a.0.boundary==self.combat_boundary && h.timestamp_ns>=self.backtrack_floor_ns).collect();
         for (h,a,inferred) in live_tracks::connected(hits,joining,self.idle_ns) {
             self.add_to_encounter(&h,inferred);
+            if inferred {self.adjust_encounter_hits(h.source,h.target,Some(self.current),1,a.display_hits());}
             if let Some(skill)=a.recorded_skill() {
                 // Compaction may have coalesced this pending hit's exact
                 // ability/target key. Transfer from either representation.
@@ -425,7 +449,7 @@ impl Meter {
             pet_damage:view.into_iter().flat_map(|v|v.sources.iter().chain(v.estimates.iter())).filter(|(source,_)|self.registry.owner(**source).is_some() && self.registry.owner_group(**source)==*k).map(|(_,a)|a.damage).sum(),
             skills:skill_groups.get(k).cloned().unwrap_or_default(),
             estimated_damage:estimated.get(k).map_or(0,|a|a.damage),explicit_hits:a.hits-estimated.get(k).map_or(0,|a|a.hits),
-            damage: a.damage,hits: a.hits,dps: (duration > 0.0).then(|| a.damage as f64/duration),
+            damage: a.damage,hits: a.hits,display_hits:a.hits.saturating_add(a.inferred_hits),dps: (duration > 0.0).then(|| a.damage as f64/duration),
             share: if summary.damage == 0 { 0.0 } else { a.damage as f64/summary.damage as f64 },
             critical_rate: a.flags[0] as f64/(a.hits-estimated.get(k).map_or(0,|a|a.hits)).max(1) as f64,
             named: self.registry.records.get(&label_key).is_some_and(|m| m.name.is_some() && !m.conflicting),
@@ -435,7 +459,7 @@ impl Meter {
         let targets = encounter.views.keys().filter_map(|k| *k).map(|k|(k,self.registry.label(k)))
             .filter(|(_,name)|name.to_lowercase().contains(&self.target_query)).take(256).collect();
         let chart=self.chart(&summary);
-        Snapshot { remembered_players:self.registry.remembered_players(),revision: self.revision,identity_revision: self.registry.revision,encounter: encounter.id,
+        Snapshot { display_hits:summary.hits.saturating_add(summary.inferred_hits),remembered_players:self.registry.remembered_players(),revision: self.revision,identity_revision: self.registry.revision,encounter: encounter.id,
             target: self.selected,summary,source_count: count,rows,targets,target_count,
             last_command: self.last_command,partial: self.partial,self_binding:self.registry.self_binding(),
             current_encounter:self.current,encounters:self.encounters.iter().map(|(id,e)|(*id,e.state)).collect(),estimated_damage,

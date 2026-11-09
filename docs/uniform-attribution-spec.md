@@ -1,13 +1,37 @@
 # Uniform packet attribution contract
 
-2026-11-09. Release 0.2.4 / Windows 0.2.4.0 / capture ABI 2.
-The user accepted and authorized commit, push and publication of this revision.
-Damage interpretation preserves released v0.2.3 behavior. Explicit and implicit
-are evidence categories, not main-versus-other actor categories. An explicit
-record cannot exclude its actor's other damage from HP inference or identify self.
-Main selection cannot determine packet eligibility. Preserve raw amount separately
-from HP-effective impact, and keep eligible-active fallback when current evidence
-is missing or ambiguous. Publication does not authorize live capture or stopping apps.
+2026-11-09. Release 0.2.5 / Windows 0.2.5.0 / capture ABI 2. The user accepted and
+authorized commit, push and GitHub prerelease publication of 0.2.4 and 0.2.5.
+Damage interpretation preserves released v0.2.3 and remade v0.2.4 behavior. Explicit
+and implicit are evidence categories, not main-versus-other actor categories.
+An explicit record cannot exclude its actor's other damage or identify local self.
+Main selection cannot determine packet eligibility. Raw amount and HP-effective
+impact remain distinct. No release/build authority permits live capture or stopping
+an app. Keep detailed domain findings local and limit claims to retained evidence.
+
+## Plain Hits display without damage changes
+
+The user requested one best Hits number, without estimated/incomplete markers.
+Rows and encounter summary combine explicit records and post-commit inferred attack
+counts. Distinct current supported observations count individually, including
+identical notification bodies. Explicit overlap counts once. Sparse evidence uses
+one per distinct source/target HP obligation; receipt retries and delivery chunks
+cannot add hits. Late explicit evidence can replace an inferred contribution.
+Metadata follows existing target/owner/encounter membership and cannot choose
+recipients, amounts, eligibility, activity, training or boundaries. Crit retains
+its explicit-only denominator and observed flags. Counter history is finite;
+count pressure cannot reject or delay damage. Pure zero-impact notifications
+without inferred credit are not newly reconstructed by this change.
+
+This is the chosen best estimate, not proof of universal physical multiplicity.
+The offline audit remains evidence about competing notification interpretations;
+packet identity and allocation count do not establish physical hit identity.
+All retained inputs must preserve parsed quantities, source/target/skill/origin
+attribution, HP reconciliation and unattributed amounts/causes. Equal grand totals
+alone are insufficient. Validate full streams and existing audits, excluding only
+new count metadata/resource fields and label formatting. Estimates never train.
+The read-only audit and export tools cannot feed new weights or constraints back
+into the damage resolver. Current evidence and bounded storage are in AGENTS.md.
 
 ## Scope and invariants
 

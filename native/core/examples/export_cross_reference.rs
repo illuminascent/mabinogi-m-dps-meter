@@ -24,6 +24,9 @@ impl Cursor {
             let body = matches!(e.wire, Some(20526 | 21196 | 170066 | 171124));
             row(out, json!({"kind":"packet","at":stamp_json(e.at),"wire":e.wire,
                 "inbound":e.flow.sport==16000,"length":e.payload_length,"decoded":e.decoded,
+                "resolved_attack":(e.wire==Some(20526)).then(||r.combat.attacks.iter().find(|a|a.at==e.at)).flatten().map(|a|json!({
+                    "source":key_json(a.source),"target":key_json(a.target),
+                    "eligible_at_export":r.meter.registry.damage_eligible(a.source,a.target)})),
                 "payload":body.then(||hex(&e.payload)),"truncated":body && e.payload.len()!=e.payload_length}))?;
         }
         self.frames = r.frames;
@@ -56,8 +59,10 @@ impl Cursor {
 fn main() { if let Err(e) = run() { eprintln!("{e}"); std::process::exit(1); } }
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len()!=3 { return Err("usage: export_cross_reference CAPTURE NEW_EVENTS.jsonl NEW_AUDIT.json".into()); }
-    let mut out = BufWriter::new(OpenOptions::new().write(true).create_new(true).open(&args[1]).map_err(|e|e.to_string())?);
+    if args.len()!=3 { return Err("usage: export_cross_reference CAPTURE NEW_EVENTS.jsonl|- NEW_AUDIT.json".into()); }
+    let streaming=args[1]=="-";
+    let sink:Box<dyn Write>=if streaming{Box::new(std::io::stdout())}else{Box::new(OpenOptions::new().write(true).create_new(true).open(&args[1]).map_err(|e|e.to_string())?)};
+    let mut out = BufWriter::new(sink);
     let mut audit = BufWriter::new(OpenOptions::new().write(true).create_new(true).open(&args[2]).map_err(|e|e.to_string())?);
     let mut r = Replay::new(false);
     let mut cursor = Cursor::default();
@@ -73,6 +78,7 @@ fn run() -> Result<()> {
     row(&mut audit,r.audit())?;
     out.flush().map_err(|e|e.to_string())?;
     audit.flush().map_err(|e|e.to_string())?;
-    println!("{}",json!({"frames":cursor.frames,"hp_observations":cursor.hp,"intervals":cursor.intervals}));
+    let summary=json!({"frames":cursor.frames,"hp_observations":cursor.hp,"intervals":cursor.intervals});
+    if streaming{eprintln!("{summary}");}else{println!("{summary}");}
     Ok(())
 }

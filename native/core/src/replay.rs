@@ -14,6 +14,7 @@ pub struct Evidence {
     pub flow: Flow,pub payload: Vec<u8>,pub payload_length: usize,pub decoded: bool,
 }
 pub struct Replay {
+    pub hit_counter:crate::hit_count::HitCounter,
     pub damage_wire:crate::damage_wire::Survey,
     pub semantic_error:Option<String>,
     pub hp_evidence:crate::hp_evidence::Ledger,
@@ -41,7 +42,7 @@ pub struct Replay {
 }
 impl Replay {
     pub fn new(aligned: bool) -> Self {
-        Self { damage_wire:crate::damage_wire::Survey::default(),semantic_error:None,hp_evidence:crate::hp_evidence::Ledger::default(),protected_hp:crate::protected_hp::Decoder::default(),protected_hp_samples:VecDeque::new(),protected_hp_evictions:0,protected_hp_seeds:VecDeque::new(),use_clock_bounds:true,explicit_origins:BTreeMap::new(),explicit_origin_examples:VecDeque::new(),numeric:crate::numeric::Numeric::default(),combat:combat::Combat::default(),timeline:combat::Timeline::default(),last_clock:BTreeMap::new(),roster_revision:u64::MAX,pending_skills:VecDeque::new(),meter: Meter::default(),diagnostics: Diagnostics::default(),segments: 0,frames: 0,
+        Self { hit_counter:crate::hit_count::HitCounter::default(),damage_wire:crate::damage_wire::Survey::default(),semantic_error:None,hp_evidence:crate::hp_evidence::Ledger::default(),protected_hp:crate::protected_hp::Decoder::default(),protected_hp_samples:VecDeque::new(),protected_hp_evictions:0,protected_hp_seeds:VecDeque::new(),use_clock_bounds:true,explicit_origins:BTreeMap::new(),explicit_origin_examples:VecDeque::new(),numeric:crate::numeric::Numeric::default(),combat:combat::Combat::default(),timeline:combat::Timeline::default(),last_clock:BTreeMap::new(),roster_revision:u64::MAX,pending_skills:VecDeque::new(),meter: Meter::default(),diagnostics: Diagnostics::default(),segments: 0,frames: 0,
             streams: BTreeMap::new(),connections: BTreeMap::new(),next_lineage:0,fins:BTreeMap::new(),syns: BTreeMap::new(),
             last_timestamp: None,evidence: VecDeque::new(),frame_history: VecDeque::new(),history_bytes: 0,
             aligned,finished: false,buffered: 0,health:crate::health::Health::default(),process:0,continuities:BTreeMap::new(),context_orders:BTreeMap::new(),live_scope:false }
@@ -618,6 +619,15 @@ impl Replay {
             if credit.prepared_skill.is_none() && !self.health.attribution.prepare_skill(credit.id,skill){return Err("credit preparation receipt mismatch".into());}
             match self.meter.commit_credit(credit.id,hit.clone(),inferred,skill){
                 Ok(status)=>{
+                    if status==crate::meter::CreditCommit::Committed{
+                        match &credit.kind{
+                            crate::attribution::CreditKind::Inferred(e)=>{
+                                let assignment=self.meter.last_hit_assignment(true).expect("committed hit metadata");
+                                self.hit_counter.inferred(e,assignment,&self.combat,&self.damage_wire,&self.health,&mut self.meter);
+                            }
+                            crate::attribution::CreditKind::Explicit{hit,at}=>self.hit_counter.explicit(hit.source,hit.target,*at,&self.combat,&self.damage_wire,&mut self.meter),
+                        }
+                    }
                     if !inferred && skill.is_none() && !credit.detail_coarsened && status==crate::meter::CreditCommit::Committed{
                         if self.pending_skills.len()==PENDING_SKILLS{self.pending_skills.pop_front();self.diagnostics.report("skill_evidence_wait_detail_coarsened");}
                         self.pending_skills.push_back((hit,at,self.meter.last_hit_assignment(false).expect("committed raw credit")));
@@ -742,8 +752,8 @@ impl Replay {
         let output=health["returned_output_ceiling_bytes"].as_u64().unwrap_or(0) as usize;
         let allocation_headroom=256*1024;
         let pending_skill_ceiling=PENDING_SKILLS*(std::mem::size_of::<(Hit,Stamp,crate::meter::HitAssignment)>()+128);
-        let ceiling=health_ceiling+scratch+output+self.combat.assignment_ceiling_bytes()+self.timeline.assignment_ceiling_bytes()+self.damage_wire.owned_bytes()+crate::numeric::Numeric::ceiling_bytes()+pending_skill_ceiling+allocation_headroom;
-        json!({"conservative_total_ceiling_bytes":ceiling,"allocation_headroom_bytes":allocation_headroom,"budget_bytes":10*1024*1024,"within_budget":health_ceiling>0 && ceiling<=10*1024*1024,"bound_scope":"finite inference/obligation/publication capacities; independent meter results and raw recording excluded","combat_owned_bytes":self.combat.assignment_owned_bytes(),"combat_ceiling_bytes":self.combat.assignment_ceiling_bytes(),"timeline_conservative_bytes":self.timeline.assignment_owned_bytes(),"timeline_ceiling_bytes":self.timeline.assignment_ceiling_bytes(),"raw_damage_ring_owned_bytes":self.damage_wire.owned_bytes(),"pending_skill_ceiling_bytes":pending_skill_ceiling,"pending_skill_owned_bytes":self.pending_skills.capacity()*(std::mem::size_of::<(Hit,Stamp,crate::meter::HitAssignment)>()+128),"numeric_owned_bytes":self.numeric.owned_bytes(),"numeric_ceiling_bytes":crate::numeric::Numeric::ceiling_bytes(),"attribution_owned_bytes":self.health.attribution.owned_bytes(),"attribution_ceiling_bytes":crate::attribution::Attribution::ceiling_bytes()})
+        let ceiling=crate::hit_count::HitCounter::ceiling_bytes()+health_ceiling+scratch+output+self.combat.assignment_ceiling_bytes()+self.timeline.assignment_ceiling_bytes()+self.damage_wire.owned_bytes()+crate::numeric::Numeric::ceiling_bytes()+pending_skill_ceiling+allocation_headroom;
+        json!({"hit_count_ceiling_bytes":crate::hit_count::HitCounter::ceiling_bytes(),"hit_count_owned_bytes":self.hit_counter.owned_bytes(),"conservative_total_ceiling_bytes":ceiling,"allocation_headroom_bytes":allocation_headroom,"budget_bytes":10*1024*1024,"within_budget":health_ceiling>0 && ceiling<=10*1024*1024,"bound_scope":"finite inference/obligation/publication capacities; independent meter results and raw recording excluded","combat_owned_bytes":self.combat.assignment_owned_bytes(),"combat_ceiling_bytes":self.combat.assignment_ceiling_bytes(),"timeline_conservative_bytes":self.timeline.assignment_owned_bytes(),"timeline_ceiling_bytes":self.timeline.assignment_ceiling_bytes(),"raw_damage_ring_owned_bytes":self.damage_wire.owned_bytes(),"pending_skill_ceiling_bytes":pending_skill_ceiling,"pending_skill_owned_bytes":self.pending_skills.capacity()*(std::mem::size_of::<(Hit,Stamp,crate::meter::HitAssignment)>()+128),"numeric_owned_bytes":self.numeric.owned_bytes(),"numeric_ceiling_bytes":crate::numeric::Numeric::ceiling_bytes(),"attribution_owned_bytes":self.health.attribution.owned_bytes(),"attribution_ceiling_bytes":crate::attribution::Attribution::ceiling_bytes()})
     }
 }
 pub(crate) fn hex(p: &[u8]) -> String { p.iter().map(|b| format!("{b:02X}")).collect() }
@@ -761,7 +771,7 @@ pub fn key_json(k: identity::EntityKey) -> Value {
 }
 pub fn snapshot_json(s: &Snapshot) -> Value {
     // Decimal strings preserve u128 values in JSON consumers without bigint support.
-    json!({ "damage": s.summary.damage.to_string(),"hits": s.summary.hits,
+    json!({ "damage": s.summary.damage.to_string(),"hits": s.summary.hits,"display_hits":s.display_hits,
         "start_ns": s.summary.start,"end_ns": s.summary.end,"duration_seconds": s.summary.duration(),
         "dps": s.summary.dps(),"source_count": s.source_count,"target_count": s.target_count,"remembered_players":s.remembered_players,
         "revision": s.revision,"identity_revision": s.identity_revision,"last_command": s.last_command,
@@ -771,7 +781,7 @@ pub fn snapshot_json(s: &Snapshot) -> Value {
             "origin":s.self_binding.source.map(|e| format!("{:?}",e.origin)),
             "source_frame": s.self_binding.source.filter(|e|matches!(e.origin,identity::tracking::EvidenceOrigin::Packet { .. })).map(|e| e.frame)},
         "actors": s.rows.iter().map(|r| json!({"key": key_json(r.key),"label": r.label,
-            "damage": r.damage.to_string(),"hits": r.hits,"dps": r.dps,"share": r.share,
+            "damage": r.damage.to_string(),"hits": r.hits,"display_hits":r.display_hits,"dps": r.dps,"share": r.share,
             "named": r.named,"is_self": r.is_self,"assignment_key": r.assignment_key.map(key_json),"estimated_damage":r.estimated_damage.to_string(),"pet_damage":r.pet_damage.to_string(),"skills":r.skills.iter().map(|s|json!({"id":s.id,"label":s.label,"explicit":s.explicit.to_string(),"estimated":s.estimated.to_string()})).collect::<Vec<_>>()})).collect::<Vec<_>>() })
 }
 pub fn demo() -> Result<Replay> {

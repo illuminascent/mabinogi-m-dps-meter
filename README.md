@@ -1,10 +1,10 @@
 # Mabinogi Mobile DPS meter
 
-Latest prerelease: [v0.2.4](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.4).
-Version **0.2.4 / Windows 0.2.4.0 / capture ABI 2**.
-Damage behavior matches v0.2.3. Actor IDs and the status footer are removed;
-diagnostics are saved beside recordings. Read [the Rust guide](native/README.md)
+Latest prerelease: [v0.2.5](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.5).
+Version **0.2.5 / Windows 0.2.5.0 / capture ABI 2**. Hits includes inferred attacks;
+damage interpretation preserves v0.2.3 behavior. See [the Rust guide](native/README.md)
 and [attribution contract](docs/uniform-attribution-spec.md).
+The unchanged [standalone research tool is available from v0.2.3](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.3).
 
 A standalone Rust DPS meter for the Japanese Windows client. It passively reads
 game-owned TCP traffic through Windows Packet Monitor and displays each
@@ -35,7 +35,8 @@ Application errors and capture diagnostics are written there as
 - Close the window to stop capture. Each recording session lasts at most one hour.
 
 The **Estimated** column shows damage inferred from HP changes. It contributes
-to damage totals and DPS without adding observed hits or critical hits.
+to damage totals and DPS. **Hits** shows the best combined count of explicit
+and inferred attacks; **Crit** uses explicit records.
 Explicit and implicit damage are reconciled without treating an explicit record
 as complete coverage of its actor.
 Pets are grouped with their identified owner.

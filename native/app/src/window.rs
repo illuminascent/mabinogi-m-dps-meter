@@ -182,14 +182,14 @@ impl State {
         if smoke.started.elapsed()>std::time::Duration::from_secs(15){failure=Some("UI smoke deadline exceeded");}
         else if let Some(snapshot)=&self.snapshot {
             match smoke.stage {
-                0=>{if snapshot.summary.damage!=8900 || snapshot.targets.len()!=2{failure=Some("Initial demo snapshot mismatch");}
+                0=>{if snapshot.summary.damage!=8900 || snapshot.targets.len()!=2 || snapshot.display_hits!=9 || !snapshot.rows.iter().any(|r|r.explicit_hits==4 && r.display_hits==7){failure=Some("Initial demo snapshot mismatch");}
                     else{PostMessageW(h,0x202,0,((self.px(250) as isize)<<16)|self.px(30) as isize);smoke.stage=1;}},
                 1 if snapshot.target.is_some()=>{if snapshot.summary.damage!=3000{failure=Some("Target sidebar did not select its own totals");}
                     else {let key=snapshot.rows[0].assignment_key;smoke.self_key=key;self.send(Action::AssignSelf(key));smoke.stage=2;}},
                 2 if snapshot.self_binding.key==smoke.self_key=>{let mut r=Rect::default();GetClientRect(h,&mut r);PostMessageW(h,0x202,0,((self.px(62) as isize)<<16)|(r.right-self.px(55)) as isize);smoke.stage=3;},
                 3 if snapshot.encounter==2=>{if snapshot.summary.damage!=0 || snapshot.self_binding.key!=smoke.self_key{failure=Some("Split lost warmed self or retained combat totals");}
                     else{SendMessageW(self.encounter_combo,0x14e,1,0);PostMessageW(h,0x111,4|(1<<16),self.encounter_combo as isize);smoke.stage=4;}},
-                4 if snapshot.encounter==1=>{if snapshot.summary.damage!=8900 || snapshot.target.is_some() || !snapshot.rows.iter().any(|r|r.is_self){failure=Some("Encounter history/All targets/marker mismatch");}else{done=true;}},_=>()
+                4 if snapshot.encounter==1=>{if snapshot.summary.damage!=8900 || snapshot.display_hits!=9 || snapshot.target.is_some() || !snapshot.rows.iter().any(|r|r.is_self){failure=Some("Encounter history/All targets/marker mismatch");}else{done=true;}},_=>()
             }
         }
         if done||failure.is_some(){let mut r=Rect::default();GetClientRect(h,&mut r);let result=serde_json::json!({"passed":done,"error":failure,"stage":smoke.stage,"layout":{"client_height":r.bottom,"bottom_padding":self.px(16),"sidebar_bottom":self.content_bottom(r.bottom),"chart_bottom":self.content_bottom(r.bottom),"table_bottom":self.table_bottom(r.bottom),"chart_label_top":self.chart_top(r.bottom)-self.px(26),"footer_reserved":0},"snapshot":self.snapshot.as_ref().map(mabi_meter_core::replay::snapshot_json)});let _=std::fs::write(&smoke.report,result.to_string());PostMessageW(h,0x10,0,0);}else{self.smoke=Some(smoke);}
@@ -230,7 +230,7 @@ impl State {
         }
         if let Some(s)=&self.snapshot {
             let dps=s.summary.dps().map_or_else(||"—".into(),|v|format!("{v:.1}"));
-            self.text(dc,&format!("Damage {}     DPS {}     {:.2}s     {} hits",number(s.summary.damage),dps,s.summary.duration(),s.summary.hits),
+            self.text(dc,&format!("Damage {}     DPS {}     {:.2}s     {} hits",number(s.summary.damage),dps,s.summary.duration(),s.display_hits),
                 Rect{left:p(28),top:p(88),right:r.right-p(24),bottom:p(120)},fg,false);
             let left=p(224);let table_width=r.right-left-p(22);let name_right=left+table_width*36/100;
             let damage_right=left+table_width*49/100;let dps_right=left+table_width*62/100;let share_right=left+table_width*70/100;let hits_right=left+table_width*76/100;let crit_right=left+table_width*85/100;let hp_right=r.right-p(22);
@@ -248,7 +248,7 @@ impl State {
                 self.text(dc,&number(row.damage),column(name_right,damage_right,y,height),color,true);
                 self.text(dc,&row.dps.map_or_else(||"—".into(),|v|format!("{v:.1}")),column(damage_right,dps_right,y,height),color,true);
                 self.text(dc,&format!("{:.1}%",row.share*100.0),column(dps_right,share_right,y,height),muted,true);
-                self.text(dc,&row.hits.to_string(),column(share_right,hits_right,y,height),muted,true);
+                self.text(dc,&row.display_hits.to_string(),column(share_right,hits_right,y,height),muted,true);
                 self.text(dc,&if row.explicit_hits==0{"—".into()}else{format!("{:.1}%",row.critical_rate*100.0)},column(hits_right,crit_right,y,height),muted,true);
                 self.text(dc,&if row.estimated_damage==0{"—".into()}else{number(row.estimated_damage)},column(crit_right,hp_right,y,height),muted,true);
             }
@@ -338,9 +338,18 @@ pub fn run(source:Source)->Result<()> {run_inner(source,None)}
 pub fn smoke(report:std::path::PathBuf)->Result<()> {run_inner(Source::Demo,Some(report))}
 fn run_inner(source:Source,smoke_report:Option<std::path::PathBuf>)->Result<()> {
     let (tx,rx)=mpsc::sync_channel::<Command>(64);let (ack_tx,ack_rx)=mpsc::sync_channel(64);let latest=Arc::new(Mutex::new(None));let output=latest.clone();
+    let smoke_mode=smoke_report.is_some();
     let core=thread::Builder::new().name("meter-core".into()).spawn(move||{
         if matches!(source,Source::Empty){if let Err(e)=crate::live::controller(rx,ack_tx,output.clone(),3600,true){crate::diagnostics::error("capture_start_or_finalize",&e);}return;}
-        let replay=match load(source){Ok(r)=>r,Err(e)=>{crate::diagnostics::error("replay_load",&e);return;}};let mut session=Session::new(replay,None);
+        let mut replay=match load(source){Ok(r)=>r,Err(e)=>{crate::diagnostics::error("replay_load",&e);return;}};
+        if smoke_mode{
+            // A zero-amount synthetic credit exercises the actual Hits renderer
+            // without changing the six explicit demo hits or its damage totals.
+            let mut h=replay.meter.raw_hits.front().unwrap().clone();h.timestamp_ns=5_000_000_000;h.damage.amount=0;
+            replay.meter.add_estimate(h.clone()).unwrap();let tag=replay.meter.last_hit_assignment(true).unwrap();
+            replay.meter.set_display_hits(h.source,h.target,&tag,3);
+        }
+        let mut session=Session::new(replay,None);
         *output.lock().unwrap()=Some(session.replay.meter.snapshot());
         while let Ok(c)=rx.recv(){let ack=session.command(c);crate::diagnostics::command(&ack);if ack_tx.send(ack).is_err(){break;}}
     }).map_err(|e|e.to_string())?;

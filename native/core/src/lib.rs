@@ -33,3 +33,5 @@ impl Diagnostics {
             "protected_hp_seed_eviction" | "tcp_gap_recovered" | "stale_identity_ignored" | "actor_binding_replaced"))
     }
 }
+
+pub mod hit_count;

@@ -1,9 +1,10 @@
 # Rust code guide
 
-Release **0.2.4 / Windows 0.2.4.0 / capture ABI 2** preserves released v0.2.3
-damage behavior and the UI/logging improvements. Explicit coverage is matched per
-event; actors with explicit records remain eligible for other implicit damage.
-Main selection and naming cannot establish actor-wide coverage.
+Release **0.2.5 / Windows 0.2.5.0 / capture ABI 2** preserves released v0.2.3
+and remade v0.2.4 damage results across all 17 retained inputs. Hits uses bounded
+post-commit count metadata. Actor-wide explicit/self exclusion is absent; UI and
+logging improvements from 0.2.4 remain. Read [the handoff](../AGENTS.md) for current
+validation evidence, cleanup policy and scoped publication authority.
 
 Read the [attribution contract](../docs/uniform-attribution-spec.md) before
 changing combat interpretation. The [root README](../README.md) covers use,
@@ -28,6 +29,7 @@ TCP input -> reassembly / wire observations -> Numeric -> Health -> Attribution
 | `core/src/health.rs` | Target-local packet association, explicit/HP reconciliation and clean-anchor admission |
 | `core/src/combat.rs` | Existing action/state/skill evidence, partial clocks and diagnostic impact model |
 | `core/src/attribution.rs` | Sole allocation/fallback, recent attack spans, unattributed causes and acknowledged delivery |
+| `core/src/hit_count.rs` | Bounded post-commit display counts, explicit overlap and duplicate-delivery suppression; no damage decisions |
 | `core/src/meter.rs` | Atomic actor amounts and downstream encounter, target, owner and skill views |
 | `core/src/replay.rs`, `session.rs` | Production orchestration, retries, file replay and measurement boundaries |
 | `app/src` | Win32 UI, capture ownership, authenticated worker IPC and raw recording |
@@ -105,7 +107,7 @@ From the repository root:
 ```powershell
 ./scripts/build-rust.ps1
 # If the standard EXE is running, build a separate acceptance candidate:
-./scripts/build-rust.ps1 -OutputName mabi-meter-0.2.4-remade.exe
+./scripts/build-rust.ps1 -OutputName mabi-meter-next.exe
 ./scripts/test-rust.ps1
 ./scripts/test-rust.ps1 -LocalFixtures
 New-Item -ItemType Directory -Force .local | Out-Null
@@ -153,8 +155,31 @@ Direct Cargo commands require dependencies cached under their active
 | `evaluate_causal CAPTURE` | Streaming interval/obligation checks, bounded-storage and service measurements |
 | `credit_bounds` | Conservative inference storage contract |
 | `audit_damage_fields` | Complete known-prefix field diagnostics |
-| `export_cross_reference CAPTURE NEW_EVENTS.jsonl NEW_AUDIT.json` | Offline packet/HP/interval export for paired comparisons |
+| `export_cross_reference CAPTURE NEW_EVENTS.jsonl\|- NEW_AUDIT.json` | Read-only packet/HP/interval export; `-` streams JSONL to stdout, summary to stderr |
 | `equal_share_census` | Historical equal-share reason-label census; not current fallback coverage |
 
 Review the example's usage before running it. Offline collectors are not fed
 back into inference and are not live storage dependencies.
+
+`scripts/audit-hit-counts.py` compares presentation-based hit-count hypotheses
+against these exports without feeding any result into damage allocation. It
+requires an independent baseline application audit and checks damage assignments,
+skills, origins, HP accounting and unattributed causes. For a small offline run:
+
+```powershell
+./dist/mabi-meter-0.2.4-remade.exe replay capture.jsonl --audit .local/baseline.json
+# Run export_cross_reference with capture.jsonl .local/events.jsonl .local/observed.json
+python scripts/audit-hit-counts.py --events .local/events.jsonl --audit .local/observed.json --baseline-audit .local/baseline.json --output .local/hit-counts.json
+python -m unittest discover -s scripts/tests -v
+```
+
+Use new output paths. Large runs can pipe the exporter's stdout directly into
+the audit's `--events -` input; event files are optional evidence outputs, never
+lookup indexes. The observer retains at most 4,096 compact combat packets and
+12 examples. Final audit comparison loads the bounded diagnostic reports
+separately. Packet counts and identical-payload collapse remain competing
+hypotheses; unknown physical multiplicity stays unknown. This is offline research
+tooling; it adds no Python dependency to the meter EXE. The production Hits UI
+uses a separate bounded post-commit counter. Each evidence cache retains at most
+1,024 rows; its conservative ceiling is 204,880 bytes, included in the current
+9,876,536-byte inference ceiling. Display counts never change damage or crit flags.

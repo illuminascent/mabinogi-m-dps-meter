@@ -1,8 +1,8 @@
 # Rust code guide
 
-Current source version: **0.2.3**, following the GitHub prerelease convention.
+Current source version: **0.2.4**, a local build awaiting user acceptance.
 The application and embedded capture code share version
-0.2.3, Windows file version is 0.2.3.0, and capture ABI remains 2.
+0.2.4, Windows file version is 0.2.4.0, and capture ABI remains 2.
 
 Read the [attribution contract](../docs/uniform-attribution-spec.md) before
 changing combat interpretation. The [root README](../README.md) covers use,
@@ -30,11 +30,13 @@ TCP input -> reassembly / wire observations -> Numeric -> Health -> Attribution
 | `core/src/meter.rs` | Atomic actor amounts and downstream encounter, target, owner and skill views |
 | `core/src/replay.rs`, `session.rs` | Production orchestration, retries, file replay and measurement boundaries |
 | `app/src` | Win32 UI, capture ownership, authenticated worker IPC and raw recording |
+| `app/src/diagnostics.rs` | Flushed JSONL application/error logs beside recordings; status stays outside the meter UI |
 | `app/src/research_window.rs`, `research.rs` | Native research epoch controls and shared raw recorder; no combat interpretation |
 | `capture/src` | Packet Monitor capture library and stable ABI |
 
-All actors follow the same interpretation path. Self selection, display names
-and owner grouping cannot choose packet eligibility. Legacy `Health` returned
+All actors follow the same packet interpretation path. Direct explicit sources
+and the identified main character are excluded from HP-derived allocation.
+Names and owner grouping cannot choose packet eligibility. Legacy `Health` returned
 allocations are compatibility previews; production delivery consumes only the
 persistent Attribution outbox.
 
@@ -82,8 +84,8 @@ known-source delivery rows at 1,024 each. Audit, model, clock, skill and tempora
 storage have additional fixed caps. Recording and downstream meter aggregates
 are independent; no disk index or spill extends the assignment working set.
 
-The current conservative inference ceiling is 9,671,656 bytes. The dedicated
-Windows pressure test measured 4,568,709 allocator-requested bytes, including
+The current conservative inference ceiling is 9,747,528 bytes. The dedicated
+Windows pressure test measured 4,605,598 allocator-requested bytes, including
 temporary allocations; neither number is whole-process RSS. Run
 `credit_bounds` and `causal_memory` when changing state layout or capacities.
 

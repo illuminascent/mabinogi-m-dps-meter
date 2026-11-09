@@ -30,7 +30,7 @@ impl Bounds{fn compatible(self,b:Self)->bool{
 #[derive(Clone)]
 enum Kind{Attack(Attack),Explicit{source:EntityKey,raw:u64,impact:Option<u64>,flags:[u8;7]}}
 #[derive(Clone)]
-struct Fact{id:u64,at:Stamp,available:u64,kind:Kind,bounds:Bounds}
+struct Fact{inference_excluded:bool,id:u64,at:Stamp,available:u64,kind:Kind,bounds:Bounds}
 struct OrphanClaim{target:EntityKey,fact:Fact}
 struct Pending{id:u64,amount:u64,at:Stamp,baseline:Stamp,hp_before:u64,hp_after:u64,end:Option<Stamp>,available:u64,deadline:u64,bounds:Bounds,baseline_bounds:Bounds,clock_uncertain:bool,sentinel_uncertain:bool,conditional:bool}
 struct Slot{hp:u64,baseline:Stamp,baseline_training:bool,pending:VecDeque<Pending>,facts:VecDeque<Fact>,truncated:bool}
@@ -60,7 +60,7 @@ impl Health{
     fn peak(&mut self){self.peak_owned_bytes=self.peak_owned_bytes.max(self.owned_bytes());}
     pub fn set_available(&mut self,now:u64){self.available=self.available.max(now);}
     fn now(&mut self,at:Stamp)->u64{self.available=self.available.max(at.timestamp_ns);self.available}
-    /// Compatibility only: self selection is not a causal input.
+    /// Legacy compatibility; production receives self/coverage policy from Registry.
     pub fn self_sources(&mut self,_known:bool,_own:BTreeSet<EntityKey>){}
     pub fn note_actor(&mut self,source:EntityKey,at:Stamp){self.attribution.note_actor(source,at);self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;}
     pub fn refresh_support(&mut self){self.attribution.refresh_support();self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;}
@@ -80,6 +80,7 @@ impl Health{
         self.attribution.revalidate_registry(registry);let mut removed=0u64;
         for(key,s)in &mut self.slots{
             let old_capacity=s.facts.capacity();let mut ids=Vec::new();
+            for f in &mut s.facts{f.inference_excluded=match &f.kind{Kind::Attack(a)=>registry.inference_excluded(a.source),Kind::Explicit{..}=>true};}
             s.facts.retain(|f|{let valid=match &f.kind{Kind::Attack(a)=>registry.damage_eligible(a.source,a.target),Kind::Explicit{source,..}=>source.actor==0 || registry.damage_eligible(*source,key.1)};if !valid{ids.push(f.id);}valid});
             if !ids.is_empty(){s.truncated=true;for p in &mut s.pending{p.conditional=true;}for id in ids{if self.fact_order.remove(&(id,key.0,key.1)){self.fact_count-=1;removed+=1;}}}
             if s.facts.capacity()>s.facts.len()*2{s.facts.shrink_to_fit();}self.fact_capacity=self.fact_capacity-old_capacity+s.facts.capacity();
@@ -112,7 +113,7 @@ impl Health{
     fn retain_orphan(&mut self,target:EntityKey,at:Stamp,kind:Kind){
         if !matches!(kind,Kind::Explicit{..}){return;}
         if self.orphan_claims.len()==MAX_ORPHAN_CLAIMS{self.orphan_claims.pop_front();self.orphan_claim_evictions+=1;}
-        self.next_fact+=1;let available=self.now(at);self.orphan_claims.push_back(OrphanClaim{target,fact:Fact{id:self.next_fact,at,available,kind,bounds:Bounds::default()}});
+        self.next_fact+=1;let available=self.now(at);self.orphan_claims.push_back(OrphanClaim{target,fact:Fact{inference_excluded:match &kind{Kind::Attack(a)=>!self.attribution.inference_eligibility(a.source,a.target),Kind::Explicit{..}=>true},id:self.next_fact,at,available,kind,bounds:Bounds::default()}});
     }
     fn take_orphans(&mut self,target:EntityKey,baseline:Stamp,at:Stamp)->Vec<Fact>{
         let mut result=Vec::new();let count=self.orphan_claims.len();for _ in 0..count{let o=self.orphan_claims.pop_front().unwrap();
@@ -129,7 +130,7 @@ impl Health{
         while self.slots[&key].facts.len()>=MAX_TARGET_FACTS{let id=self.slots[&key].facts.front().unwrap().id;self.drop_fact(key,id,true);self.outcome("per-target fact capacity");}
         while self.fact_count>=MAX_FACTS{let Some((id,c,t))=self.fact_order.first().copied()else{break;};self.drop_fact((c,t),id,true);self.outcome("global fact capacity");}
         self.next_fact+=1;let available=self.now(at);
-        let s=self.slots.get_mut(&key).unwrap();let old=s.facts.capacity();if old==0{s.facts=VecDeque::with_capacity(1);}s.facts.push_back(Fact{id:self.next_fact,at,available,kind,bounds:Bounds::default()});self.fact_capacity=self.fact_capacity-old+s.facts.capacity();self.fact_order.insert((self.next_fact,key.0,key.1));self.fact_count+=1;self.peak_facts=self.peak_facts.max(self.fact_count);self.dirty.insert(key);self.peak();
+        let s=self.slots.get_mut(&key).unwrap();let old=s.facts.capacity();if old==0{s.facts=VecDeque::with_capacity(1);}s.facts.push_back(Fact{inference_excluded:match &kind{Kind::Attack(a)=>!self.attribution.inference_eligibility(a.source,a.target),Kind::Explicit{..}=>true},id:self.next_fact,at,available,kind,bounds:Bounds::default()});self.fact_capacity=self.fact_capacity-old+s.facts.capacity();self.fact_order.insert((self.next_fact,key.0,key.1));self.fact_count+=1;self.peak_facts=self.peak_facts.max(self.fact_count);self.dirty.insert(key);self.peak();
     }
     pub fn attack(&mut self,a:Attack)->Result<()>{if !self.attribution.eligibility(a.source,a.target){self.outcome("forbidden same-side attack excluded");return Ok(());}self.attribution.note_relationship(a.source,a.target,a.at);self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;let key=(a.at.context,a.target);if !self.slots.contains_key(&key){self.outcome("attack without baseline; compact source support retained");return Ok(());}self.push_fact(key,a.at,Kind::Attack(a));Ok(())}
     pub fn explicit(&mut self,source:EntityKey,target:EntityKey,amount:u64,at:Stamp)->Result<()>{self.explicit_fields(source,target,amount,Some(amount),[0;7],at)}
@@ -293,7 +294,7 @@ impl Health{
             }
         }
         let mismatch=sum>p.amount as u128;let matched=sum.min(p.amount as u128) as u64;let residual=p.amount-matched;let unresolved=assignment.unsupported;
-        let mut attacks=Vec::new();for i in &assignment.attacks{let f=&s.facts[*i];consumed.insert(f.id);if !paired.contains(i){if let Kind::Attack(a)=&f.kind{attacks.push(a);}}}
+        let mut attacks=Vec::new();for i in &assignment.attacks{let f=&s.facts[*i];consumed.insert(f.id);if !paired.contains(i) && !f.inference_excluded{if let Kind::Attack(a)=&f.kind{attacks.push(a);}}}
         // A terminal endpoint is a raw-impact ceiling only for a structurally
         // isolated, concordant explicit/presentation pair. Never clip on mere
         // proximity, amount equality, a stale baseline or a role disagreement.
@@ -324,18 +325,17 @@ impl Health{
         // Repeated packets remain evidence, but cannot inflate a sparse prior.
         let sparse_mode=actor_trained.values().any(|trained|!*trained);
         for((source,skill),(weight,_,_))in &mut groups{if sparse_mode{let count=templates.keys().filter(|(s,_,_,_)|s==source).count();let sum:f64=templates.iter().filter(|((s,k,_,_),_)|s==source && (if *k==0{None}else{Some(*k)})==*skill).map(|(_,w)|*w).sum();*weight=sum/count.max(1) as f64;}}
-        // Consumed/paired presentations and explicit actors remain real source
-        // support when no unpaired presentation can explain a positive residual.
+        // Paired peer presentations can still support a positive residual.
+        // Direct explicit sources remain excluded from HP allocation.
         if groups.is_empty() && residual>0{
-            for i in &assignment.attacks{if let Kind::Attack(a)=&s.facts[*i].kind{let(w,trained)=model.weight(a.source,key.1,a.key1,a.key2,a.meta[..7].try_into().unwrap());groups.entry((a.source,(a.key1!=0).then_some(a.key1))).or_insert((w,trained,vec![a.at.frame]));}}
-            for i in &assignment.explicit{if let Kind::Explicit{source,..}=&s.facts[*i].kind{groups.entry((*source,None)).or_insert((1.0,false,vec![s.facts[*i].at.frame]));}}
+            for i in &assignment.attacks{if s.facts[*i].inference_excluded{continue;}if let Kind::Attack(a)=&s.facts[*i].kind{let(w,trained)=model.weight(a.source,key.1,a.key1,a.key2,a.meta[..7].try_into().unwrap());groups.entry((a.source,(a.key1!=0).then_some(a.key1))).or_insert((w,trained,vec![a.at.frame]));}}
         }
         let mut candidates:Vec<_>=groups.keys().map(|(s,_)|*s).filter(|s|s.actor!=0).collect::<BTreeSet<_>>().into_iter().collect();let trained=groups.values().all(|(_,t,_)|*t);
         let method=if assignment.unsupported{"forced uncertain raw overlap and HP residual"}else if clipped{"explicit accounted; terminal overkill clipped"}else if residual==0{"explicit accounted"}else if groups.is_empty(){forced.unwrap_or("no eligible active attacker at retention limit")}else if p.sentinel_uncertain{"forced unpublished-sentinel actor inference"}else if p.clock_uncertain{"forced clock-uncertain actor inference"}else if p.conditional{"forced conditional-key actor inference"}else if s.truncated{"forced inference with truncated evidence"}else if assignment.batched{"forced batch sequence inference"}else if ambiguous{"forced ambiguous packet association"}else if candidates.len()==1{"single packet-supported actor"}else if trained{"constrained actor/component model"}else{"forced sparse actor/component prior"};
         let support:Vec<_>=groups.into_iter().map(|((source,skill),(weight,_,frames))|Candidate{source,skill,weight,frames}).collect();
-        let failed_before=self.attribution.unattributed_inferred;let no_active_before=self.attribution.no_eligible_active_unattributed;let capacity_before=self.attribution.delivery_capacity_unattributed;let allocations=self.attribution.resolve_budget(key.1,p.at,p.id,residual,&support,method);let unassigned=(self.attribution.unattributed_inferred-failed_before)as u64;self.no_support_loss+=self.attribution.no_eligible_active_unattributed-no_active_before;self.capacity_loss+=self.attribution.delivery_capacity_unattributed-capacity_before;
+        let excluded_before=self.attribution.explicit_source_unattributed;let failed_before=self.attribution.unattributed_inferred;let no_active_before=self.attribution.no_eligible_active_unattributed;let capacity_before=self.attribution.delivery_capacity_unattributed;let allocations=self.attribution.resolve_budget(key.1,p.at,p.id,residual,&support,method);let unassigned=(self.attribution.unattributed_inferred-failed_before)as u64;self.no_support_loss+=self.attribution.no_eligible_active_unattributed-no_active_before;self.capacity_loss+=self.attribution.delivery_capacity_unattributed-capacity_before;
         candidates.extend(allocations.iter().map(|e|e.source));candidates.sort();candidates.dedup();
-        let method=if unassigned>0 && allocations.is_empty(){if self.attribution.delivery_capacity_unattributed>capacity_before{"unattributed: bounded publication capacity"}else{"unattributed: no eligible active attacker"}}else{allocations.first().map_or(method,|e|e.method)};
+        let method=if unassigned>0 && allocations.is_empty(){if self.attribution.delivery_capacity_unattributed>capacity_before{"unattributed: bounded publication capacity"}else if self.attribution.explicit_source_unattributed>excluded_before{"unattributed: explicit source excluded from HP inference"}else{"unattributed: no eligible active attacker"}}else{allocations.first().map_or(method,|e|e.method)};
         let allocated=allocations.iter().map(|a|a.amount).sum::<u64>();
         // Empty eligible active support is a counted attribution failure.
         // Later roster presence cannot retroactively supply an attacker.

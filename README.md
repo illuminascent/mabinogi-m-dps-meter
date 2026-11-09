@@ -1,7 +1,8 @@
 # Mabinogi Mobile DPS meter
 
 Latest prerelease: [v0.2.3](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.3).
-Version **0.2.3**; Windows file version **0.2.3.0**; capture ABI **2**.
+Local acceptance build **0.2.4**; Windows file version **0.2.4.0**; capture ABI **2**.
+Publication awaits user acceptance.
 See the [Rust code guide](native/README.md) and
 [attribution contract](docs/uniform-attribution-spec.md).
 
@@ -21,6 +22,8 @@ other Windows builds and ARM64 have not been validated.
 Run `mabi-meter.exe` from a writable folder and approve the Windows UAC request
 for its capture worker. Play normally while the meter learns character names.
 Recordings and window settings are saved in a `recordings` folder beside the EXE.
+Application errors and capture diagnostics are written there as
+`meter-*.log.jsonl`; the meter has no status footer.
 
 - Choose an encounter, then select or search for a target. **All targets** shows
   the combined view. New encounters become the active view automatically.

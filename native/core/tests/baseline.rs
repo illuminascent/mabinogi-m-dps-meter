@@ -138,7 +138,7 @@ fn cmd(m: &mut Meter,id: u64,action: Action) -> mabi_meter_core::meter::Ack {
 }
 #[test] fn late_names_enrich_same_key() {
     let mut r = Registry::default();let old = r.observe(1,1,42).unwrap();r.assign(Some(old)).unwrap();
-    assert!(r.label(old).starts_with("<ME>"));
+    assert!(r.label(old).starts_with("<YOU>"));
     assert_eq!(r.appearance(1,1,appearance(42,100,"Example")).unwrap(),old);
     assert!(r.label(old).starts_with("Example"));
 }
@@ -159,7 +159,7 @@ fn cmd(m: &mut Meter,id: u64,action: Action) -> mabi_meter_core::meter::Ack {
     let ack = m.command(Command { id:1,observed_revision:observed,encounter:m.current,action:Action::AssignSelf(Some(selected)) });
     assert!(ack.applied);assert_eq!(ack.snapshot.last_command,1);assert_eq!(m.registry.self_key,Some(selected));
     let target = m.registry.observe(1,1,999).unwrap();assert!(cmd(&mut m,2,Action::Target(Some(target))).applied);
-    let s = m.snapshot();assert_eq!(s.rows[0].key,selected);assert!(s.rows[0].label.starts_with("<ME>"));
+    let s = m.snapshot();assert_eq!(s.rows[0].key,selected);assert!(s.rows[0].label.starts_with("<YOU>"));
     assert!(!s.rows[0].named);assert!(cmd(&mut m,3,Action::AssignSelf(None)).applied);assert_eq!(m.registry.self_key,None);
 }
 #[test] fn stale_and_replayed_commands_are_acknowledged() {

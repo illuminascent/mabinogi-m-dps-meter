@@ -24,22 +24,23 @@ impl Credit {
 pub struct Candidate {pub source:EntityKey,pub skill:Option<u32>,pub weight:f64,pub frames:Vec<u64>}
 #[derive(Clone)]
 struct Actor {source:EntityKey,at:Stamp,kind:u8}
-struct Relationship {source:EntityKey,target:EntityKey,first:Stamp,at:Stamp,idle_policy:u64}
+struct Relationship {source:EntityKey,target:EntityKey,first:Stamp,at:Stamp,idle_policy:u64,explicit_coverage:bool}
 struct Owed {credit:Credit,amount:u128}
 struct Row {credit:Credit,amount:u128}
 #[derive(Clone,Copy)]
-enum Failure{NoActive,SideConflict,DeliveryCapacity}
+enum Failure{NoActive,SideConflict,DeliveryCapacity,ExplicitSource}
 pub struct Attribution {
     pub active_idle_ns:u64,
+    self_source:Option<EntityKey>,
     actors:VecDeque<Actor>,relationships:VecDeque<Relationship>,outbox:VecDeque<Row>,owed:VecDeque<Owed>,
     next_receipt:u64,leased:Option<Credit>,support_revision:u64,owed_revision:u64,
     pub detected_explicit:u128,pub detected_inferred:u128,pub settled_inferred:u128,pub published:u128,pub published_explicit:u128,pub published_inferred:u128,
     pub unattributed_explicit:u128,pub unattributed_inferred:u128,pub unattributed_outcomes:u64,pub explicit_side_conflicts:u64,
-    pub no_eligible_active_unattributed:u128,pub side_conflict_unattributed:u128,pub delivery_capacity_unattributed:u128,
+    pub explicit_source_unattributed:u128,pub no_eligible_active_unattributed:u128,pub side_conflict_unattributed:u128,pub delivery_capacity_unattributed:u128,
     pub coarsened_obligations:u64,pub coarsened_publications:u64,pub rejected_publications:u64,pub raw_detail_coarsenings:u64,
     pub clipped_explicit_overkill:u128,pub clipped_explicit_records:u64,pub overkill_clip_unavailable:u128,pub max_explicit_finalize_work:usize,
 }
-impl Default for Attribution{fn default()->Self{Self{active_idle_ns:crate::meter::DEFAULT_IDLE_NS,actors:VecDeque::new(),relationships:VecDeque::new(),outbox:VecDeque::new(),owed:VecDeque::new(),next_receipt:0,leased:None,support_revision:0,owed_revision:0,detected_explicit:0,detected_inferred:0,settled_inferred:0,published:0,published_explicit:0,published_inferred:0,unattributed_explicit:0,unattributed_inferred:0,unattributed_outcomes:0,explicit_side_conflicts:0,no_eligible_active_unattributed:0,side_conflict_unattributed:0,delivery_capacity_unattributed:0,coarsened_obligations:0,coarsened_publications:0,rejected_publications:0,raw_detail_coarsenings:0,clipped_explicit_overkill:0,clipped_explicit_records:0,overkill_clip_unavailable:0,max_explicit_finalize_work:0}}}
+impl Default for Attribution{fn default()->Self{Self{self_source:None,active_idle_ns:crate::meter::DEFAULT_IDLE_NS,actors:VecDeque::new(),relationships:VecDeque::new(),outbox:VecDeque::new(),owed:VecDeque::new(),next_receipt:0,leased:None,support_revision:0,owed_revision:0,detected_explicit:0,detected_inferred:0,settled_inferred:0,published:0,published_explicit:0,published_inferred:0,unattributed_explicit:0,unattributed_inferred:0,unattributed_outcomes:0,explicit_side_conflicts:0,explicit_source_unattributed:0,no_eligible_active_unattributed:0,side_conflict_unattributed:0,delivery_capacity_unattributed:0,coarsened_obligations:0,coarsened_publications:0,rejected_publications:0,raw_detail_coarsenings:0,clipped_explicit_overkill:0,clipped_explicit_records:0,overkill_clip_unavailable:0,max_explicit_finalize_work:0}}}
 impl Attribution {
     pub fn note_actor(&mut self,source:EntityKey,at:Stamp){self.register_actor(source,at,None);}
     fn register_actor(&mut self,source:EntityKey,at:Stamp,role:Option<u8>){
@@ -52,7 +53,15 @@ impl Attribution {
     }
     pub fn note_actor_kind(&mut self,source:EntityKey,kind:&str,at:Stamp){
         let role=if damage_side_from_kind(kind)==crate::identity::DamageSide::Player{2}else if kind.eq_ignore_ascii_case("npc") || kind.eq_ignore_ascii_case("enemy"){1}else{0};
-        self.register_actor(source,at,Some(role));
+        let excluded=self.actors.iter().find(|a|a.source==source).map_or(0,|a|a.kind&4);
+        self.register_actor(source,at,Some(role|excluded));
+    }
+    pub fn exclude_inference(&mut self,source:EntityKey){
+        if let Some(a)=self.actors.iter_mut().find(|a|a.source==source){a.kind|=4;}
+        for r in &mut self.relationships{if r.source==source{r.explicit_coverage=true;}}
+    }
+    pub fn inference_eligibility(&self,source:EntityKey,target:EntityKey)->bool{
+        self.self_source!=Some(source) && !self.relationships.iter().any(|r|r.source==source && r.explicit_coverage) && self.eligibility(source,target) && self.actors.iter().find(|a|a.source==source).is_none_or(|a|a.kind&4==0)
     }
     pub fn note_relationship(&mut self,source:EntityKey,target:EntityKey,at:Stamp){
         let old=self.relationships.iter().position(|r|r.source==source && r.target==target).map(|i|self.relationships.remove(i).unwrap());
@@ -65,7 +74,8 @@ impl Attribution {
             }
         }}
         if self.relationships.len()==MAX_RELATIONSHIPS{self.relationships.pop_front();}
-        self.relationships.push_back(Relationship{source,target,first,at:latest,idle_policy:self.active_idle_ns});if old.is_none(){self.support_revision+=1;}
+        let explicit_coverage=old.as_ref().is_some_and(|r|r.explicit_coverage) || self.actors.iter().any(|a|a.source==source && a.kind&4!=0);
+        self.relationships.push_back(Relationship{source,target,first,at:latest,idle_policy:self.active_idle_ns,explicit_coverage});if old.is_none(){self.support_revision+=1;}
         self.register_actor(source,at,None);
     }
     fn raw_credit(source:EntityKey,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp,method:&'static str)->Credit{
@@ -74,7 +84,7 @@ impl Attribution {
     }
     fn same_scope(source:EntityKey,target:EntityKey)->bool{source.process==target.process && source.binding==target.binding}
     pub fn eligibility(&self,source:EntityKey,target:EntityKey)->bool{
-        let side=|key|self.actors.iter().find(|a|a.source==key).map_or(crate::identity::DamageSide::Unknown,|a|if a.kind==2{crate::identity::DamageSide::Player}else{crate::identity::DamageSide::Unknown});
+        let side=|key|self.actors.iter().find(|a|a.source==key).map_or(crate::identity::DamageSide::Unknown,|a|if a.kind&3==2{crate::identity::DamageSide::Player}else{crate::identity::DamageSide::Unknown});
         source.actor!=0 && damage_eligible_sides(source,target,side(source),side(target))
     }
     pub fn active_candidates(&self,target:EntityKey,at:Stamp)->Vec<Candidate>{
@@ -85,7 +95,7 @@ impl Attribution {
         support.sort_by_key(|c|c.source);support.dedup_by_key(|c|c.source);support
     }
     fn record_unattributed(&mut self,explicit:bool,amount:u128,was_settled:bool,reason:Failure){
-        if amount==0{return;}self.unattributed_outcomes+=1;match reason{Failure::NoActive=>self.no_eligible_active_unattributed+=amount,Failure::SideConflict=>self.side_conflict_unattributed+=amount,Failure::DeliveryCapacity=>self.delivery_capacity_unattributed+=amount};
+        if amount==0{return;}self.unattributed_outcomes+=1;match reason{Failure::NoActive=>self.no_eligible_active_unattributed+=amount,Failure::SideConflict=>self.side_conflict_unattributed+=amount,Failure::DeliveryCapacity=>self.delivery_capacity_unattributed+=amount,Failure::ExplicitSource=>self.explicit_source_unattributed+=amount};
         if explicit{self.unattributed_explicit+=amount;}else{self.unattributed_inferred+=amount;if was_settled{self.settled_inferred-=amount;}}
     }
     pub fn submit_explicit(&mut self,source:EntityKey,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp){
@@ -95,14 +105,14 @@ impl Attribution {
         if source.actor==0{self.submit_unbound_explicit_held(target,raw,flags,at,ready_after);return;}
         self.detected_explicit+=raw as u128;
         if !self.eligibility(source,target){self.explicit_side_conflicts+=1;self.record_unattributed(true,raw as u128,false,Failure::SideConflict);return;}
-        self.note_relationship(source,target,at);let mut credit=Self::raw_credit(source,target,raw,flags,at,"explicit source claim awaiting HP reconciliation");credit.ready_after=ready_after;self.enqueue(credit);
+        self.note_relationship(source,target,at);self.exclude_inference(source);let mut credit=Self::raw_credit(source,target,raw,flags,at,"explicit source claim awaiting HP reconciliation");credit.ready_after=ready_after;self.enqueue(credit);
     }
     pub fn submit_unbound_explicit(&mut self,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp){
         self.submit_unbound_explicit_held(target,raw,flags,at,0);
     }
     pub fn submit_unbound_explicit_held(&mut self,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp,ready_after:u64){
         self.detected_explicit+=raw as u128;
-        let allocations=self.fallback(target,at,raw,0,&[],"forced unbound raw source from active attackers",false);
+        let allocations=self.fallback(target,at,raw,0,&[],"forced unbound raw source from active attackers",false,false);
         if allocations.is_empty(){self.record_unattributed(true,raw as u128,false,Failure::NoActive);}
         for e in allocations{let mut credit=Self::raw_credit(e.source,target,e.amount,flags,at,"forced unbound raw source from active attackers");credit.ready_after=ready_after;self.enqueue(credit);}
     }
@@ -134,10 +144,10 @@ impl Attribution {
     }
     /// The only allocator/fallback. Current typed packet support and recent
     /// target-specific attack evidence enter one frequency-neutral allocation.
-    fn fallback(&self,target:EntityKey,at:Stamp,amount:u64,interval:u64,typed:&[Candidate],method:&'static str,restricted:bool)->Vec<Estimate>{
-        let mut candidates:Vec<Candidate>=typed.iter().take(MAX_RELATIONSHIPS).filter(|c|self.eligibility(c.source,target)).map(|c|Candidate{source:c.source,skill:c.skill,weight:c.weight,frames:c.frames.iter().take(MAX_CREDIT_FRAMES).copied().collect()}).collect();
+    fn fallback(&self,target:EntityKey,at:Stamp,amount:u64,interval:u64,typed:&[Candidate],method:&'static str,restricted:bool,inferred:bool)->Vec<Estimate>{
+        let mut candidates:Vec<Candidate>=typed.iter().take(MAX_RELATIONSHIPS).filter(|c|self.eligibility(c.source,target) && (!inferred || self.inference_eligibility(c.source,target))).map(|c|Candidate{source:c.source,skill:c.skill,weight:c.weight,frames:c.frames.iter().take(MAX_CREDIT_FRAMES).copied().collect()}).collect();
         let broad=candidates.is_empty() && !restricted;
-        if candidates.is_empty() && !restricted{candidates=self.active_candidates(target,at);}
+        if candidates.is_empty() && !restricted{candidates=self.active_candidates(target,at).into_iter().filter(|c|!inferred || self.inference_eligibility(c.source,target)).collect();}
         candidates.sort_by_key(|c|(c.source,c.skill));
         // Combining duplicate notifications uses the larger weight, never count.
         candidates.dedup_by(|a,b|{if a.source==b.source && a.skill==b.skill{b.weight=b.weight.max(a.weight);true}else{false}});
@@ -154,8 +164,8 @@ impl Attribution {
     }
     pub fn resolve_budget(&mut self,target:EntityKey,at:Stamp,interval:u64,amount:u64,typed:&[Candidate],method:&'static str)->Vec<Estimate>{
         self.detected_inferred+=amount as u128;
-        let selected=self.fallback(target,at,amount,interval,typed,method,false);
-        if selected.is_empty(){self.record_unattributed(false,amount as u128,false,if typed.iter().any(|c|c.source.actor!=0 && !self.eligibility(c.source,target)){Failure::SideConflict}else{Failure::NoActive});}
+        let selected=self.fallback(target,at,amount,interval,typed,method,false,true);
+        if selected.is_empty(){self.record_unattributed(false,amount as u128,false,if typed.iter().any(|c|c.source.actor!=0 && !self.eligibility(c.source,target)){Failure::SideConflict}else if typed.iter().any(|c|self.eligibility(c.source,target) && !self.inference_eligibility(c.source,target)) || self.active_candidates(target,at).iter().any(|c|!self.inference_eligibility(c.source,target)){Failure::ExplicitSource}else{Failure::NoActive});}
         let mut allocations=Vec::new();for e in selected{self.settled_inferred+=e.amount as u128;let old=self.unattributed_inferred;self.enqueue(Credit{id:0,prepared_skill:None,detail_coarsened:false,kind:CreditKind::Inferred(e.clone()),method,ready_after:0});if old==self.unattributed_inferred{allocations.push(e);}}
         allocations
     }
@@ -172,10 +182,15 @@ impl Attribution {
         o.credit.id=0;o.credit.prepared_skill=None;self.owed.push_back(o);
     }
     pub fn revalidate_registry(&mut self,registry:&crate::identity::Registry){
+        self.self_source=registry.self_key;
         for actor in &mut self.actors{
+            let explicit=actor.kind&4;
             actor.kind=if registry.damage_side(actor.source)==crate::identity::DamageSide::Player{2}
                 else if registry.records.get(&actor.source).is_some_and(|m|m.kind==Some("npc")){1}else{0};
+            actor.kind|=explicit;
+            if registry.records.get(&actor.source).is_some_and(|m|m.explicit_damage){actor.kind|=4;}
         }
+        for r in &mut self.relationships{r.explicit_coverage|=registry.records.get(&r.source).is_some_and(|m|m.explicit_damage);}
         self.relationships.retain(|r|registry.damage_eligible(r.source,r.target));
     }
     pub fn refresh_support(&mut self){self.settle_owed();}
@@ -189,6 +204,7 @@ impl Attribution {
     }
     fn enqueue(&mut self,mut credit:Credit){
         if !self.eligibility(credit.source(),credit.target()){let explicit=matches!(credit.kind,CreditKind::Explicit{..});self.record_unattributed(explicit,credit.amount()as u128,!explicit,Failure::SideConflict);return;}
+        if matches!(credit.kind,CreditKind::Inferred(_)) && !self.inference_eligibility(credit.source(),credit.target()){self.record_unattributed(false,credit.amount()as u128,true,Failure::ExplicitSource);return;}
         if self.outbox.len()<MAX_CREDITS{let amount=credit.amount() as u128;self.outbox.push_back(Row{credit,amount});return;}
         let source=credit.source();let explicit=matches!(credit.kind,CreditKind::Explicit{..});
         // Once fine publication storage is exhausted, actor/origin identity
@@ -232,6 +248,7 @@ impl Attribution {
     /// An atomic consumer rejection changes support through the same fallback.
     /// Empty eligible replacement support records unattributed credit. Arithmetic
     /// retry keeps its original immutable lease and does not call this method.
+    pub fn reject_inferred_lease(&mut self,id:u64)->bool{self.reject_leased_for(id,Failure::ExplicitSource)}
     pub fn reject_leased(&mut self,id:u64)->bool{self.reject_leased_for(id,Failure::SideConflict)}
     fn reject_leased_for(&mut self,id:u64,reason:Failure)->bool{
         let Some(original)=self.leased.as_ref().filter(|c|c.id==id).cloned()else{return false;};let n=original.amount();
@@ -242,7 +259,7 @@ impl Attribution {
         let Some(original)=self.leased.as_ref().filter(|c|c.id==id).cloned()else{return false;};let n=original.amount();let target=original.target();let at=original.at();
         let active=self.active_candidates(target,at);
         let support:Vec<_>=accepted.iter().filter(|c|self.eligibility(c.source,target) && (c.source==original.source() || active.iter().any(|a|a.source==c.source))).take(MAX_ACTORS).cloned().collect();
-        let allocations=self.fallback(target,at,n,id,&support,"forced eligible active attacker after consumer rejection",true);if allocations.is_empty(){return self.reject_leased_for(id,Failure::DeliveryCapacity);}
+        let allocations=self.fallback(target,at,n,id,&support,"forced eligible active attacker after consumer rejection",true,matches!(original.kind,CreditKind::Inferred(_)));if allocations.is_empty(){return self.reject_leased_for(id,Failure::DeliveryCapacity);}
         let raw=match &original.kind{CreditKind::Explicit{hit,..}=>Some(hit.damage.raw_flags),_=>None};
         let Some(row)=self.outbox.front_mut()else{return false;};row.amount-=n as u128;if row.amount==0{self.outbox.pop_front();}self.leased=None;self.rejected_publications+=1;
         for e in allocations{let mut credit=if let Some(flags)=raw{Self::raw_credit(e.source,target,e.amount,flags,at,"forced eligible active attacker after consumer rejection")}else{Credit{id:0,prepared_skill:None,detail_coarsened:false,kind:CreditKind::Inferred(e),method:"forced eligible active attacker after consumer rejection",ready_after:0}};credit.detail_coarsened=original.detail_coarsened;self.enqueue(credit);}true
@@ -259,7 +276,7 @@ impl Attribution {
         audit["active_idle_ns"]=serde_json::json!(self.active_idle_ns);audit["unattributed"]=serde_json::json!(self.unattributed_amount().to_string());audit["unattributed_explicit"]=serde_json::json!(self.unattributed_explicit.to_string());audit["unattributed_inferred"]=serde_json::json!(self.unattributed_inferred.to_string());audit["unattributed_outcomes"]=serde_json::json!(self.unattributed_outcomes);audit["explicit_side_conflicts"]=serde_json::json!(self.explicit_side_conflicts);
         audit["observed_raw_explicit"]=serde_json::json!((self.detected_explicit+self.clipped_explicit_overkill).to_string());
         audit["overkill_clipped_explicit"]=serde_json::json!(self.clipped_explicit_overkill.to_string());audit["overkill_clipped_records"]=serde_json::json!(self.clipped_explicit_records);audit["overkill_clip_unavailable"]=serde_json::json!(self.overkill_clip_unavailable.to_string());audit["max_explicit_finalize_work"]=serde_json::json!(self.max_explicit_finalize_work);
-        audit["unattributed_reasons"]=serde_json::json!({"no_eligible_active_unattributed":self.no_eligible_active_unattributed.to_string(),"side_conflict_unattributed":self.side_conflict_unattributed.to_string(),"delivery_capacity_unattributed":self.delivery_capacity_unattributed.to_string(),"invariant":self.no_eligible_active_unattributed+self.side_conflict_unattributed+self.delivery_capacity_unattributed==self.unattributed_amount()});
+        audit["unattributed_reasons"]=serde_json::json!({"explicit_source_excluded":self.explicit_source_unattributed.to_string(),"no_eligible_active_unattributed":self.no_eligible_active_unattributed.to_string(),"side_conflict_unattributed":self.side_conflict_unattributed.to_string(),"delivery_capacity_unattributed":self.delivery_capacity_unattributed.to_string(),"invariant":self.explicit_source_unattributed+self.no_eligible_active_unattributed+self.side_conflict_unattributed+self.delivery_capacity_unattributed==self.unattributed_amount()});
         audit["by_origin"]=serde_json::json!({"explicit":{"published":self.published_explicit.to_string(),"queued":queued_raw.to_string(),"owed":owed_raw.to_string(),"unattributed":self.unattributed_explicit.to_string(),"invariant":self.detected_explicit==self.published_explicit+queued_raw+owed_raw+self.unattributed_explicit},"inferred":{"published":self.published_inferred.to_string(),"queued":(queued-queued_raw).to_string(),"owed":(owed-owed_raw).to_string(),"unattributed":self.unattributed_inferred.to_string(),"invariant":self.detected_inferred==self.published_inferred+(queued-queued_raw)+(owed-owed_raw)+self.unattributed_inferred}});
         audit["owed_preview"]=serde_json::json!(self.owed.iter().take(8).map(|o|serde_json::json!({"source_actor":o.credit.source().actor,"target_actor":o.credit.target().actor,"context":o.credit.at().context,"amount":o.amount.to_string(),"raw":matches!(o.credit.kind,CreditKind::Explicit{..}),"detail_coarsened":o.credit.detail_coarsened})).collect::<Vec<_>>());
         audit["roster_preview"]=serde_json::json!(self.actors.iter().take(8).map(|a|serde_json::json!({"actor":a.source.actor,"process":a.source.process,"binding":a.source.binding,"generation":a.source.generation,"context":a.at.context,"frame":a.at.frame,"kind":a.kind})).collect::<Vec<_>>());

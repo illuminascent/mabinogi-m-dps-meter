@@ -3,6 +3,7 @@ use mabi_meter_core::{replay::{self,Replay}, Result};
 use std::path::PathBuf;
 mod wire;
 mod research;
+mod diagnostics;
 #[cfg(windows)] mod platform;
 #[cfg(windows)] mod live;
 #[cfg(windows)] mod research_window;
@@ -60,7 +61,7 @@ fn run() -> Result<i32> {
             if args.next().is_some(){return Err("Unexpected live option".into());}
             let (_keep,commands)=std::sync::mpsc::sync_channel(1);let (acks,_ack_rx)=std::sync::mpsc::sync_channel(1);
             let updates=std::sync::Arc::new(std::sync::Mutex::new(None));live::controller(commands,acks,updates.clone(),seconds,false)?;
-            if let Some(Ok((snapshot,status)))=updates.lock().unwrap().take(){println!("{}",serde_json::json!({"status":status,"summary":replay::snapshot_json(&snapshot),"recordings":live::data_dir()?}));}return Ok(0);
+            if let Some(snapshot)=updates.lock().unwrap().take(){println!("{}",serde_json::json!({"summary":replay::snapshot_json(&snapshot),"recordings":live::data_dir()?}));}return Ok(0);
         }
         #[cfg(not(windows))] {return Err("Live capture requires Windows".into());}
     }
@@ -118,6 +119,6 @@ fn main() {
     #[cfg(windows)]
     // Direct rlib linkage. This query has no capture/session side effects.
     assert_eq!(mabi_capture::mabi_capture_abi_version(),2);
-    let exit = match run() { Ok(n) => n,Err(e) => { eprintln!("{e}"); 1 } };
+    let exit = match run() { Ok(n) => n,Err(e) => { diagnostics::error("application_error",&e);eprintln!("{e}"); 1 } };
     std::process::exit(exit);
 }

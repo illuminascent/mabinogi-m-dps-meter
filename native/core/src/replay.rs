@@ -550,7 +550,7 @@ impl Replay {
         self.revalidate_damage_support();
         if self.roster_revision==self.meter.registry.revision{return;}
         let roster:Vec<_>=self.meter.registry.records.iter().rev().filter(|(key,_)|key.process==self.process && self.meter.registry.is_current(**key)).take(crate::attribution::MAX_ACTORS).map(|(key,_)|(*key,self.actor_kind(*key),self.meter.registry.timing.get(key).and_then(|t|t.last).unwrap_or(at))).collect();
-        for(key,kind,observed)in roster{self.health.note_actor_kind(key,kind,observed);}
+        for(key,kind,observed)in roster{self.health.note_actor_kind(key,kind,observed);if self.meter.registry.records.get(&key).is_some_and(|m|m.explicit_damage){self.health.attribution.exclude_inference(key);}}
         self.roster_revision=self.meter.registry.revision;
     }
     fn revalidate_damage_support(&mut self){
@@ -566,6 +566,7 @@ impl Replay {
         for key in [source,target]{
             let kind=self.actor_kind(key);
             self.health.note_actor_kind(key,kind,at);
+            if self.meter.registry.records.get(&key).is_some_and(|m|m.explicit_damage){self.health.attribution.exclude_inference(key);}
         }
     }
     fn damage_fact(&mut self,p:&[u8],at:Stamp,lineage:u64)->Result<()> {
@@ -577,6 +578,7 @@ impl Replay {
         self.sync_roster(at);
         let source=u32::try_from(fields.source_prefix).ok().filter(|n|*n!=0).map(|actor|self.observed_entity(binding,actor,at));
         if let Some(source)=source{
+            if self.meter.registry.damage_eligible(source,target){self.meter.registry.note_explicit_source(source);}
             self.note_pair_roles(source,target,at);
             let role=if self.meter.registry.self_key==Some(source){"main character"}else if self.meter.registry.is_self_source(source){"owned main-character entity"}else if self.meter.registry.self_key.is_none(){"self unresolved at packet time"}else{"other source at packet time"};
             *self.explicit_origins.entry(role).or_default()+=1;
@@ -609,8 +611,12 @@ impl Replay {
                 if !self.health.attribution.reject_leased(credit.id){return Err("friendly-fire credit rejection receipt mismatch".into());}
                 self.diagnostics.report("friendly_fire_credit_rejected");self.meter.partial=true;continue;
             }
+            if !already_committed && inferred && self.meter.registry.inference_excluded(hit.source){
+                if !self.health.attribution.reject_inferred_lease(credit.id){return Err("inference exclusion receipt mismatch".into());}
+                self.diagnostics.report("explicit_source_hp_credit_excluded");continue;
+            }
             if !already_committed && self.meter.credit_admission(hit.source,inferred)==crate::meter::CreditAdmission::SourceCapacity{
-                let accepted:Vec<_>=self.health.attribution.active_candidates(hit.target,at).into_iter().filter(|c|self.meter.registry.damage_eligible(c.source,hit.target) && self.meter.credit_admission(c.source,inferred)==crate::meter::CreditAdmission::Ready).collect();
+                let accepted:Vec<_>=self.health.attribution.active_candidates(hit.target,at).into_iter().filter(|c|self.meter.registry.damage_eligible(c.source,hit.target) && (!inferred || !self.meter.registry.inference_excluded(c.source)) && self.meter.credit_admission(c.source,inferred)==crate::meter::CreditAdmission::Ready).collect();
                 if !self.health.attribution.retry_credit(credit.id,&accepted){return Err("credit capacity retry receipt mismatch".into());}
                 self.diagnostics.report("credit_source_capacity_forced_inference");self.meter.partial=true;continue;
             }
@@ -684,7 +690,7 @@ impl Replay {
     pub fn audit(&self) -> Value {
         let s = self.meter.snapshot();
         let mut audit=json!({ "format": "mabi-dps-rust-replay-v5", "protocol_profile": protocol::PROFILE,"semantic_error":self.semantic_error,
-            "attribution_policy":{"algorithm":"uniform packet attribution with eligibility v3","local_capture_ns":crate::health::LOCAL_NS,"availability_retention_ns":crate::health::WAIT_NS,"candidate_frames":null,"fallback":"one resolver; current packet support then eligible active attackers within idle split; no support stays unattributed","active_idle_ns":self.meter.idle_ns,"friendly_fire":"same actor and confirmed player/pet side excluded from every attribution path; generic NPC type does not prove faction","clock_policy":"partial ordering only; no exact HP server timestamp","raw_explicit_policy":"retain original raw fields; remove only proven terminal impact excess before explicit credit lease; auxiliary interpretation unchanged; ambiguous/missing/capacity-lost evidence keeps raw credit","explicit_hold_policy":"with a target-local HP baseline, at most capture locality plus HP availability retention; finalize on matched HP resolution or measurement/EOF flush"},
+            "attribution_policy":{"algorithm":"uniform packet attribution with explicit-source HP exclusion v4","hp_source_policy":"identified main character and every observed direct explicit source, including pets, excluded from HP-derived credit; remaining loss requires eligible peer activity or stays unattributed","local_capture_ns":crate::health::LOCAL_NS,"availability_retention_ns":crate::health::WAIT_NS,"candidate_frames":null,"fallback":"one resolver; current packet support then eligible active attackers within idle split; no support stays unattributed","active_idle_ns":self.meter.idle_ns,"friendly_fire":"same actor and confirmed player/pet side excluded from every attribution path; generic NPC type does not prove faction","clock_policy":"partial ordering only; no exact HP server timestamp","raw_explicit_policy":"retain original raw fields; remove only proven terminal impact excess before explicit credit lease; auxiliary interpretation unchanged; ambiguous/missing/capacity-lost evidence keeps raw credit","explicit_hold_policy":"with a target-local HP baseline, at most capture locality plus HP availability retention; finalize on matched HP resolution or measurement/EOF flush"},
             "hp_accounting":{"refinement_evictions":self.health.refinement_evictions,"refinements":self.health.refinements.iter().map(|r|json!({"interval":r.interval,"source":key_json(r.source),"amount":r.amount,"at":stamp_json(r.at),"attack_frames":r.attack_frames,"method":"late explicit refines provisional allocation before commit"})).collect::<Vec<_>>(),"loss":self.health.loss.to_string(),"matched_explicit":self.health.explicit.to_string(),"allocated":self.health.allocated.to_string(),"unassigned":self.health.unassigned.to_string(),"outcomes":self.health.outcomes,"audit_evictions":self.health.audit_evictions,
                 "intervals":self.health.audit.iter().map(|a|json!({"id":a.id,"target":key_json(a.target),"at":stamp_json(a.at),"baseline":stamp_json(a.baseline),"hp_before":a.hp_before,"hp_after":a.hp_after,"loss":a.loss,"explicit":a.explicit,"raw_explicit_claims":a.raw_explicit.to_string(),"residual":a.residual,"unassigned":a.unassigned,"reason":a.reason,"explicit_mismatch":a.explicit_mismatch,"candidates":a.candidates.iter().map(|k|key_json(*k)).collect::<Vec<_>>(),"evidence_frames":a.evidence,"allocations":a.allocations.iter().map(|e|json!({"source":key_json(e.source),"amount":e.amount,"skill":e.skill,"method":e.method,"evidence_frames":e.frames})).collect::<Vec<_>>()})).collect::<Vec<_>>()},
             "ownership":self.meter.registry.owners.links.values().map(|l|json!({"pet":key_json(l.pet),"owner":key_json(l.owner),"template":l.template,"kind":l.kind,"outer_reference":l.outer,"conflicting":l.conflicting,"conflict_evidence":l.conflict_evidence.map(|(owner,e)|json!({"owner":key_json(owner),"frame":e.frame,"timestamp_ns":e.timestamp_ns})),"frame":l.evidence.frame,"wire":format!("{:?}",l.evidence.origin)})).collect::<Vec<_>>(),
@@ -727,7 +733,7 @@ impl Replay {
         audit["protected_hp"]=json!({"key_count":self.protected_hp.key_count(),"sample_evictions":self.protected_hp_evictions,
             "seeds":self.protected_hp_seeds.iter().map(|(key,at,offset,hp,changed)|json!({"target":key_json(*key),"at":stamp_json(*at),"iv_offset":offset,"initial_hp":hp,"changed":changed,"method":"AES-128-CBC actor key; spawn IV; strict padding"})).collect::<Vec<_>>(),
             "samples":self.protected_hp_samples.iter().map(|(key,at,hp)|json!({"target":key_json(*key),"at":stamp_json(*at),"hp":hp})).collect::<Vec<_>>()});
-        audit["participants"]=json!(self.meter.registry.records.iter().map(|(key,m)|json!({"entity":key_json(*key),"participant":self.meter.registry.participant(*key),"state":self.meter.registry.binding_state(*key),"kind":m.kind,"uid":m.uid,"name":m.name})).collect::<Vec<_>>());
+        audit["participants"]=json!(self.meter.registry.records.iter().map(|(key,m)|json!({"entity":key_json(*key),"participant":self.meter.registry.participant(*key),"state":self.meter.registry.binding_state(*key),"kind":m.kind,"uid":m.uid,"name":m.name,"direct_explicit_source":m.explicit_damage,"hp_inference_excluded":self.meter.registry.inference_excluded(*key)})).collect::<Vec<_>>());
         audit["personal_bindings"]=json!({"evictions":self.meter.registry.personal_binding_evictions,"proofs":self.meter.registry.personal_bindings.iter().map(|p|json!({"entity":key_json(p.key),"frame":p.evidence.frame,"capture_ns":p.evidence.timestamp_ns,"offset":p.offset,"end":p.end,"pets":p.pets.iter().map(|p|json!({"persistent":p.persistent.to_string(),"template":p.template})).collect::<Vec<_>>(),"method":"complete personal pet collection and selected-key suffix"})).collect::<Vec<_>>()});
         audit["identity_candidates"]=json!(self.meter.registry.tracking.candidates.values().map(|c|json!({"old":key_json(c.old),"new":key_json(c.new),"frame":c.source.frame,"reason":c.reason})).collect::<Vec<_>>());
         audit["identity_transitions"]=json!({"evictions":self.meter.registry.tracking.event_evictions,

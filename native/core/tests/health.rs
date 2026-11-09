@@ -67,9 +67,9 @@ fn capacity_rejection_cannot_discard_already_committed_expired_allocations(){
 }
 #[test] fn search_finds_targets_beyond_the_first_catalog_page() {
     let mut m=Meter::default();let source=m.registry.observe(0,1,1).unwrap();
-    for actor in 2..=302 {let target=m.registry.observe(0,1,actor).unwrap();m.add(Hit{timestamp_ns:actor as u64,source,target,damage:Damage{actor:1,target:actor,amount:4,flags:[false;5],raw_flags:[0;7]}}).unwrap();}
+    for actor in 2..=302 {let target=m.registry.observe(0,1,actor).unwrap();m.registry.records.get_mut(&target).unwrap().name=Some(format!("Target {actor}"));m.add(Hit{timestamp_ns:actor as u64,source,target,damage:Damage{actor:1,target:actor,amount:4,flags:[false;5],raw_flags:[0;7]}}).unwrap();}
     assert_eq!(m.snapshot().targets.len(),256);
-    let ack=m.command(Command{id:1,observed_revision:m.revision,encounter:m.current,action:Action::TargetSearch("302".into())});
+    let ack=m.command(Command{id:1,observed_revision:m.revision,encounter:m.current,action:Action::TargetSearch("Target 302".into())});
     assert!(ack.applied);assert_eq!(ack.snapshot.targets.len(),1);assert_eq!(ack.snapshot.targets[0].0.actor,302);
 }
 #[test] fn hp_observations_never_cross_connection_contexts() {

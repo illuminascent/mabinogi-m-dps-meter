@@ -70,7 +70,7 @@ fn delayed_explicit_bridge_across_later_hp_reconciles_exactly_once(){
 }
 
 #[test]
-fn changing_self_marker_cannot_change_packet_assignment(){
+fn identified_self_is_excluded_from_hp_support(){
     let mut results=Vec::new();
     for selected in [None,Some(101),Some(202)]{
         let mut r=replay();let mut seq=1;
@@ -80,7 +80,7 @@ fn changing_self_marker_cannot_change_packet_assignment(){
         let mut values:Vec<_>=r.meter.inferred_hits.iter().map(|h|(h.source.actor,h.damage.amount)).collect();values.sort();
         assert_eq!(values.iter().map(|(_,n)|*n).sum::<u64>(),10);results.push(values);
     }
-    assert_eq!(results[0],results[1]);assert_eq!(results[0],results[2]);
+    assert_eq!(results[0],vec![(101,5),(202,5)]);assert_eq!(results[1],vec![(202,10)]);assert_eq!(results[2],vec![(101,10)]);
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn later_same_actor_flags_do_not_turn_an_earlier_role_disagreement_into_training
     assert_eq!(r.combat.damage_model.anchors,0);
     assert_eq!((r.health.loss,r.health.explicit,r.health.allocated),(300,100,200));
     let mut inferred:Vec<_>=r.meter.inferred_hits.iter().map(|h|(h.source.actor,h.damage.amount)).collect();inferred.sort();
-    assert_eq!(inferred,vec![(101,100),(202,100)]);
+    assert_eq!(inferred,vec![(202,100),(202,100)]);
 }
 
 #[test]

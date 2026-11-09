@@ -1,10 +1,48 @@
 # Project instructions and handoff
 
-Updated 2026-11-08, Asia/Tokyo.
+Updated 2026-11-09, Asia/Tokyo.
 
 ## Current state
 
-Source and the validated meter revision are **0.2.3**; Windows file version is
+Local source is now **0.2.4**, Windows file version **0.2.4.0**, ABI 2.
+The user requires acceptance before any 0.2.4 release; the 0.2.3 publication
+authorization does not authorize this revision. The released 0.2.3 evidence
+below remains historical. Current work removes actor IDs and routine identity/
+coverage footer diagnostics, uses `<YOU>` for unnamed self/eligible unowned
+explicit-source placeholders while self is unresolved, and excludes every
+direct explicit source (including pets) plus identified self from HP inference.
+Explicit matching/training and raw fields remain retained. See the 0.2.4
+addendum in the attribution contract.
+
+Validated local acceptance EXE: `dist/mabi-meter.exe`, SHA256
+`4a0c6e610d3b4109952eb3bea0c6015ee53efe4898e37a732f8765e9d85df29f`.
+Evidence: `.local/revision-0.2.4/validation.json` and `report.txt`; 315 private-
+inclusive Rust tests, eight focused Windows tests, nine retained research
+replays plus the world snapshot, no-capture system check, demo and native UI
+stage 4 passed. Frame counts, raw/credited explicit totals and HP loss match
+the prior evidence. Conservative inference ceiling is 9,747,528 bytes; Windows
+allocator-requested saturation peak is 4,605,598 bytes (neither is RSS).
+Only the meter EXE was replaced. Research EXE remains at its released 0.2.3
+hash. No push, release or live capture was performed.
+
+The 0.2.4 acceptance follow-up removes the entire meter status footer and its
+layout reservation; chart/sidebar use the normal 16-pixel bottom padding.
+Meter UI updates now carry only snapshots. Errors, decoder pauses, rejected
+commands, cache failures and capture reports go to flushed
+`recordings/meter-*.log.jsonl` beside the EXE. Status messages are backend log
+events. Diagnostic I/O failures fall back to stderr without aborting recording.
+Current follow-up evidence: `.local/revision-0.2.4/footer-validation.json`,
+`footer-tests.log` and `footer-build.log`. All 307 public Rust tests passed,
+including Unicode/multiline append-log coverage; final EXE passed layout-aware
+UI smoke, isolated application-error log creation without capture, system check,
+demo and unchanged town/paired replay totals. Earlier private-inclusive and
+full-corpus checks above predate this UI/logging follow-up. Release still waits
+for user acceptance. The user authorized committing this work locally on main
+on 2026-11-09; that authorization does not include push or publication.
+
+### Released 0.2.3 handoff (historical)
+
+The released source and validated meter revision were **0.2.3**; Windows file version is
 0.2.3.0 and capture ABI remains 2. Release **v0.2.3** follows the GitHub prerelease
 convention. The previous v0.2.1 baseline is commit
 `619bf40058d2727c2036d617344c1ae7ecb5f20b`; that release remains unchanged.

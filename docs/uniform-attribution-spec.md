@@ -7,6 +7,29 @@ The explicit-overkill follow-up is patch revision 0.2.3, as requested by the
 user, without a major/minor bump. The user authorized its main commit, push and
 GitHub prerelease on 2026-11-08. Capture ABI remains 2.
 
+## Local 0.2.4 update (2026-11-09)
+
+The user requested a patch revision and requires acceptance before release.
+Every eligible finite direct explicit source, including pets, is excluded from
+HP-derived allocation after its explicit evidence is observed. The identified
+main character is also excluded before its first explicit record. This applies
+to typed/model support, recent activity, retries and final publication; explicit
+reconciliation and clean-anchor training still use retained packet facts.
+Residual HP goes to other eligible active sources or remains unattributed.
+Source proof is scoped to the exact actor incarnation and is not restored from
+name caches. Bounded role-cache loss cannot bypass Registry publication checks.
+Already committed receipts remain idempotent; future evidence does not rewrite
+past committed amounts. No additional source-history allocation is introduced.
+
+Display labels omit actor IDs. An unnamed identified main character, or an
+unnamed unowned explicit source while self is unresolved, displays `<YOU>`.
+This placeholder does not assert a confirmed identity binding. Routine identity
+and coverage footer diagnostics are removed, including their reserved space.
+The meter UI consumes only snapshots. Operational errors, capture diagnostics,
+command rejections and cache failures go to flushed `recordings/meter-*.log.jsonl`
+files, with stderr fallback if diagnostic storage fails. Logging does not abort
+recording or damage delivery.
+
 ## Scope and invariants
 
 Packet interpretation precedes owner, encounter and ability grouping. Every actor

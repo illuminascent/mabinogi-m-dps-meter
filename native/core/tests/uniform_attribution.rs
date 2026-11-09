@@ -8,7 +8,7 @@ fn consume(a:&mut Attribution)->(u128,u128){let(mut raw,mut inferred)=(0,0);let 
 fn partial_explicit_and_zero_claim_cannot_erase_remaining_hp(){
     for (raw,impact,expected_raw,expected_inferred) in [(4,Some(4),4,6),(4,Some(0),4,10),(4,None,4,6)]{
         let mut h=Health::default();h.update(key(2),100,at(1)).unwrap();h.update(key(2),90,at(2)).unwrap();h.explicit_fields(key(1),key(2),raw,impact,[0;7],at(3)).unwrap();h.attack(attack(1,2,4)).unwrap();h.flush();
-        assert_eq!(consume(&mut h.attribution),(expected_raw,expected_inferred));assert_eq!(h.unassigned,0);assert_eq!(h.attribution.owed_amount(),0);
+        assert_eq!(consume(&mut h.attribution),(expected_raw,0));assert_eq!(h.unassigned,expected_inferred);assert_eq!(h.attribution.owed_amount(),0);
     }
 }
 #[test]
@@ -25,7 +25,7 @@ fn uniform_cause_by_boundary_matrix(){
         let mut h=Health::default();h.self_sources(true,[key(99)].into());h.note_actor(key(source),at(0));h.update(key(2),100,at(1)).unwrap();h.update(key(2),90,at(2)).unwrap();
         match cause{0=>{},1=>h.attack(attack(source,2,3)).unwrap(),2=>h.explicit_fields(key(source),key(2),4,Some(4),[0;7],at(3)).unwrap(),3=>{h.attack(attack(source,2,3)).unwrap();h.explicit_fields(key(source),key(2),0,Some(0),[0;7],at(4)).unwrap();},_=>h.explicit_fields(key(source),key(2),4,None,[0;7],at(3)).unwrap()}
         match boundary{0=>{h.flush();},1=>h.clear_target(1,key(2)),2=>h.clear_context(1),_=>{h.tick(1_000_000_000);}}
-        let(raw,inferred)=consume(&mut h.attribution);assert_eq!(raw+inferred,if cause==0{0}else{10},"source={source},cause={cause},boundary={boundary}");assert_eq!(h.unassigned,if cause==0{10}else{0});
+        let(raw,inferred)=consume(&mut h.attribution);assert_eq!(raw+inferred,if cause==1{10}else if cause==2 || cause==4{4}else{0},"source={source},cause={cause},boundary={boundary}");assert_eq!(h.unassigned,if cause==1{0}else if cause==2 || cause==4{6}else{10});
     }}}
 }
 #[test]
@@ -61,12 +61,12 @@ fn self_damage_claim_is_a_counted_conflict_and_never_reduces_hp_budget(){
 fn orphan_explicit_claim_uses_the_same_overlap_policy_before_baseline_or_at_capacity(){
     for saturated in [false,true]{let mut h=Health::default();
         if saturated{for actor in 10..10+mabi_meter_core::health::MAX_SLOTS as u32{h.update(key(actor),100,at(0)).unwrap();}}
-        h.explicit_fields(key(1),key(2),4,Some(4),[0;7],at(2)).unwrap();h.accept_numeric(key(2),90,at(3),Some((at(1),100)),false);h.flush();assert_eq!(consume(&mut h.attribution),(4,6));assert_eq!((h.loss,h.explicit,h.allocated,h.unassigned),(10,4,6,0));
+        h.explicit_fields(key(1),key(2),4,Some(4),[0;7],at(2)).unwrap();h.accept_numeric(key(2),90,at(3),Some((at(1),100)),false);h.flush();assert_eq!(consume(&mut h.attribution),(4,0));assert_eq!((h.loss,h.explicit,h.allocated,h.unassigned),(10,4,0,6));
     }
 }
 #[test]
 fn unmatched_raw_claim_survives_clear_before_later_numeric_comparison(){
-    let mut h=Health::default();h.update(key(2),100,at(1)).unwrap();h.explicit_fields(key(1),key(2),4,Some(4),[0;7],at(2)).unwrap();h.clear();h.accept_numeric(key(2),90,at(4),Some((at(1),100)),false);h.flush();assert_eq!(consume(&mut h.attribution),(4,6));
+    let mut h=Health::default();h.update(key(2),100,at(1)).unwrap();h.explicit_fields(key(1),key(2),4,Some(4),[0;7],at(2)).unwrap();h.clear();h.accept_numeric(key(2),90,at(4),Some((at(1),100)),false);h.flush();assert_eq!(consume(&mut h.attribution),(4,0));assert_eq!(h.unassigned,6);
 }
 #[test]
 fn anonymous_raw_claim_and_hp_residual_keep_distinct_unattributed_origins(){

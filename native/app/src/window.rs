@@ -110,7 +110,7 @@ impl Drop for BackBuffer {fn drop(&mut self){unsafe{
 struct Toolbar {encounter:Rect,idle_label:Rect,idle:Rect,seconds:Rect,split:Rect}
 struct State {
     commands:SyncSender<Command>,acks:Receiver<Ack>,latest:crate::live::Updates,
-    snapshot:Option<Snapshot>,status:String,command_id:u64,
+    snapshot:Option<Snapshot>,command_id:u64,
     encounters:Vec<u64>,encounter_combo:Handle,search:Handle,idle:Handle,
     filter:String,target_scroll:usize,topmost:bool,dpi:u32,font:Handle,edit_brush:Handle,
     smoke:Option<Smoke>,
@@ -132,7 +132,7 @@ impl State {
     fn send(&mut self,action:Action){
         let Some(s)=&self.snapshot else{return;};self.command_id+=1;
         let c=Command{id:self.command_id,observed_revision:s.revision,encounter:s.encounter,action};
-        self.status=match self.commands.try_send(c){Ok(())=>"Applying...".into(),Err(e)=>format!("Command queue: {e}")};
+        if let Err(e)=self.commands.try_send(c){crate::diagnostics::error("command_queue",&e.to_string());}
     }
     unsafe fn font(&mut self,h:Handle){
         let old=self.font;self.font=CreateFontW(-self.px(14),0,0,0,400,0,0,0,1,0,0,5,0,wide("Yu Gothic UI").as_ptr());
@@ -170,10 +170,9 @@ impl State {
     }
     unsafe fn poll(&mut self,h:Handle){
         let incoming=self.latest.lock().unwrap().take();let mut dirty=false;
-        if let Some(result)=incoming{match result{Ok((s,status))=>{self.update(s);self.status=status;},Err(e)=>self.status=e}dirty=true;}
+        if let Some(snapshot)=incoming{self.update(snapshot);dirty=true;}
         while let Ok(ack)=self.acks.try_recv(){
-            self.status=if ack.applied{"Applied".into()}else{format!("{}",ack.reason.unwrap_or_else(||"Command rejected".into()))};
-            if let Some(Err(e))=ack.persistence{self.status.push_str(&format!("; save failed: {e}"));}self.update(ack.snapshot);dirty=true;
+            self.update(ack.snapshot);dirty=true;
         }
         if dirty{InvalidateRect(h,null(),0);}
         self.smoke_step(h);
@@ -193,13 +192,16 @@ impl State {
                 4 if snapshot.encounter==1=>{if snapshot.summary.damage!=8900 || snapshot.target.is_some() || !snapshot.rows.iter().any(|r|r.is_self){failure=Some("Encounter history/All targets/marker mismatch");}else{done=true;}},_=>()
             }
         }
-        if done||failure.is_some(){let result=serde_json::json!({"passed":done,"error":failure,"stage":smoke.stage,"snapshot":self.snapshot.as_ref().map(mabi_meter_core::replay::snapshot_json)});let _=std::fs::write(&smoke.report,result.to_string());PostMessageW(h,0x10,0,0);}else{self.smoke=Some(smoke);}
+        if done||failure.is_some(){let mut r=Rect::default();GetClientRect(h,&mut r);let result=serde_json::json!({"passed":done,"error":failure,"stage":smoke.stage,"layout":{"client_height":r.bottom,"bottom_padding":self.px(16),"sidebar_bottom":self.content_bottom(r.bottom),"chart_bottom":self.content_bottom(r.bottom),"table_bottom":self.table_bottom(r.bottom),"chart_label_top":self.chart_top(r.bottom)-self.px(26),"footer_reserved":0},"snapshot":self.snapshot.as_ref().map(mabi_meter_core::replay::snapshot_json)});let _=std::fs::write(&smoke.report,result.to_string());PostMessageW(h,0x10,0,0);}else{self.smoke=Some(smoke);}
     }
     unsafe fn text(&self,dc:Handle,text:&str,mut rect:Rect,color:u32,right:bool){
         SetTextColor(dc,color);let text=wide(text);DrawTextW(dc,text.as_ptr(),(text.len()-1) as i32,&mut rect,0x20|4|0x8000|0x800|if right{2}else{0});
     }
     unsafe fn fill(&self,dc:Handle,rect:Rect,color:u32){let brush=CreateSolidBrush(color);FillRect(dc,&rect,brush);DeleteObject(brush);}
-    fn row_height(&self,height:i32)->i32 {((height-self.px(320))/16).clamp(self.px(18),self.px(28))}
+    fn content_bottom(&self,height:i32)->i32{height-self.px(16)}
+    fn chart_top(&self,height:i32)->i32{self.content_bottom(height)-self.px(64)}
+    fn table_bottom(&self,height:i32)->i32{self.chart_top(height)-self.px(30)}
+    fn row_height(&self,height:i32)->i32 {((self.table_bottom(height)-self.px(164))/16).clamp(self.px(18),self.px(28))}
     unsafe fn paint(&mut self,h:Handle){
         let mut paint:Paint=std::mem::zeroed();let screen=BeginPaint(h,&mut paint);let mut r=Rect::default();GetClientRect(h,&mut r);
         let buffered=self.buffer.ensure(screen,r.right,r.bottom);
@@ -217,11 +219,11 @@ impl State {
         self.text(dc,"s",toolbar.seconds,muted,false);
         self.text(dc,"Split",toolbar.split,accent,false);
         self.fill(dc,Rect{left:p(16),top:p(88),right:r.right-p(16),bottom:p(120)},rgb(28,36,46));
-        self.fill(dc,Rect{left:p(16),top:p(132),right:p(208),bottom:r.bottom-p(48)},rgb(24,31,40));
+        self.fill(dc,Rect{left:p(16),top:p(132),right:p(208),bottom:self.content_bottom(r.bottom)},rgb(24,31,40));
         self.text(dc,"Search targets",rect(24,132,170,26),muted,false);
         let rows=self.visible_targets();let mut y=p(200);
         for (key,label) in rows.iter().take(1).chain(rows.iter().skip(1+self.target_scroll)){
-            if y+p(30)>r.bottom-p(52){break;}
+            if y+p(30)>self.content_bottom(r.bottom)-p(4){break;}
             let selected=self.snapshot.as_ref().is_some_and(|s|s.target==*key);
             if selected{self.fill(dc,Rect{left:p(20),top:y,right:p(204),bottom:y+p(30)},rgb(36,62,75));}
             self.text(dc,label,Rect{left:p(28),top:y,right:p(196),bottom:y+p(30)},if selected{accent}else{fg},false);y+=p(32);
@@ -239,7 +241,7 @@ impl State {
             }
             let height=self.row_height(r.bottom);let max=s.rows.first().map_or(1,|r|r.damage.max(1));
             for (i,row) in s.rows.iter().enumerate(){
-                let y=p(164)+height*i as i32;if y+height>r.bottom-p(138){break;}
+                let y=p(164)+height*i as i32;if y+height>self.table_bottom(r.bottom){break;}
                 let color=if row.is_self{accent}else{fg};
                 self.fill(dc,column(left,left+((table_width as f64*row.damage as f64/max as f64) as i32),y,height-p(2)),if row.is_self{rgb(27,48,59)}else{rgb(27,34,44)});
                 self.text(dc,&format!("{}  {}",i+1,row.label),column(left+p(4),name_right-p(5),y,height),color,false);
@@ -250,7 +252,7 @@ impl State {
                 self.text(dc,&if row.explicit_hits==0{"—".into()}else{format!("{:.1}%",row.critical_rate*100.0)},column(hits_right,crit_right,y,height),muted,true);
                 self.text(dc,&if row.estimated_damage==0{"—".into()}else{number(row.estimated_damage)},column(crit_right,hp_right,y,height),muted,true);
             }
-            let chart_top=r.bottom-p(126);let chart_bottom=r.bottom-p(62);let chart_left=left;let chart_right=r.right-p(22);
+            let chart_top=self.chart_top(r.bottom);let chart_bottom=self.content_bottom(r.bottom);let chart_left=left;let chart_right=r.right-p(22);
             self.text(dc,&format!("{} estimated  ·  cumulative / last 5 s",number(s.estimated_damage)),column(left,chart_right,chart_top-p(26),p(24)),muted,false);
             self.fill(dc,Rect{left:chart_left,top:chart_top,right:chart_right,bottom:chart_bottom},rgb(24,31,40));
             let duration=s.chart.last().map_or(1.0,|p|p.0.max(0.001));let peak=s.chart.iter().flat_map(|p|[p.1,p.2]).fold(1.0,f64::max);
@@ -258,10 +260,7 @@ impl State {
                 let points:Vec<_>=s.chart.iter().map(|v|Point{x:chart_left+(v.0/duration*(chart_right-chart_left) as f64) as i32,y:chart_bottom-((if index==1{v.1}else{v.2})/peak*(chart_bottom-chart_top) as f64) as i32}).collect();
                 if points.len()>1{let pen=CreatePen(0,p(2).max(1),color);let previous=SelectObject(dc,pen);Polyline(dc,points.as_ptr(),points.len() as i32);SelectObject(dc,previous);DeleteObject(pen);}
             }
-            let coverage=format!("{} players remembered{}",s.remembered_players,if s.partial{" · Partial coverage"}else{""});
-            self.text(dc,&coverage,Rect{left:p(20),top:r.bottom-p(43),right:r.right-p(20),bottom:r.bottom-p(23)},muted,false);
         }
-        self.text(dc,&self.status,Rect{left:p(20),top:r.bottom-p(24),right:r.right-p(20),bottom:r.bottom-p(4)},muted,false);
         SelectObject(dc,old);
         if buffered {BitBlt(screen,0,0,r.right,r.bottom,dc,0,0,0x00cc0020);}
         EndPaint(h,&paint);
@@ -312,11 +311,11 @@ unsafe extern "system" fn procedure(h:Handle,message:u32,w:usize,l:isize)->isize
         0x202=>{let x=l as i16 as i32;let y=(l>>16) as i16 as i32;let mut r=Rect::default();GetClientRect(h,&mut r);
             if y<s.px(40){if x>r.right-s.px(52){save_window(h);DestroyWindow(h);}else if x>r.right-s.px(94){ShowWindow(h,6);}else if x>r.right-s.px(170){s.topmost=!s.topmost;SetWindowPos(h,if s.topmost{-1isize as Handle}else{-2isize as Handle},0,0,0,0,0x13);}}
             else if {let button=s.toolbar(r.right).split;x>=button.left&&x<button.right&&y>=button.top&&y<button.bottom}{s.send(Action::Reset);}
-            else if (s.px(20)..s.px(208)).contains(&x)&&y>=s.px(200)&&y<r.bottom-s.px(52){let row=((y-s.px(200))/s.px(32)) as usize;let index=if row==0{0}else{row+s.target_scroll};if let Some((key,_))=s.visible_targets().get(index){s.send(Action::Target(*key));}}
+            else if (s.px(20)..s.px(208)).contains(&x)&&y>=s.px(200)&&y<s.content_bottom(r.bottom)-s.px(4){let row=((y-s.px(200))/s.px(32)) as usize;let index=if row==0{0}else{row+s.target_scroll};if let Some((key,_))=s.visible_targets().get(index){s.send(Action::Target(*key));}}
             InvalidateRect(h,null(),0);0},
         0x20a=>{let mut pt=Point::default();GetCursorPos(&mut pt);ScreenToClient(h,&mut pt);if pt.x<s.px(208){let delta=(w>>16) as i16;let max=s.visible_targets().len().saturating_sub(2);s.target_scroll=if delta<0{(s.target_scroll+3).min(max)}else{s.target_scroll.saturating_sub(3)};InvalidateRect(h,null(),0);}0},
         0x7b=>{let mut pt=Point::default();GetCursorPos(&mut pt);let screen=pt;ScreenToClient(h,&mut pt);let mut r=Rect::default();GetClientRect(h,&mut r);let row=(pt.y-s.px(164))/s.row_height(r.bottom);
-            let detail=if pt.x>=s.px(224)&&pt.y>=s.px(164)&&pt.y<r.bottom-s.px(138){s.snapshot.as_ref().and_then(|v|v.rows.get(row as usize)).cloned()}else{None};
+            let detail=if pt.x>=s.px(224)&&pt.y>=s.px(164)&&pt.y<s.table_bottom(r.bottom){s.snapshot.as_ref().and_then(|v|v.rows.get(row as usize)).cloned()}else{None};
             if let Some(detail)=detail{
                 let menu=CreatePopupMenu();let key=detail.assignment_key;
                 AppendMenuW(menu,if key.is_some(){0}else{1},1,wide("Mark as me").as_ptr());AppendMenuW(menu,0,2,wide("Clear my marker").as_ptr());
@@ -340,10 +339,10 @@ pub fn smoke(report:std::path::PathBuf)->Result<()> {run_inner(Source::Demo,Some
 fn run_inner(source:Source,smoke_report:Option<std::path::PathBuf>)->Result<()> {
     let (tx,rx)=mpsc::sync_channel::<Command>(64);let (ack_tx,ack_rx)=mpsc::sync_channel(64);let latest=Arc::new(Mutex::new(None));let output=latest.clone();
     let core=thread::Builder::new().name("meter-core".into()).spawn(move||{
-        if matches!(source,Source::Empty){if let Err(e)=crate::live::controller(rx,ack_tx,output.clone(),3600,true){*output.lock().unwrap()=Some(Err(e));}return;}
-        let replay=match load(source){Ok(r)=>r,Err(e)=>{*output.lock().unwrap()=Some(Err(e));return;}};let mut session=Session::new(replay,None);
-        *output.lock().unwrap()=Some(Ok((session.replay.meter.snapshot(),"Replay ready".into())));
-        while let Ok(c)=rx.recv(){if ack_tx.send(session.command(c)).is_err(){break;}}
+        if matches!(source,Source::Empty){if let Err(e)=crate::live::controller(rx,ack_tx,output.clone(),3600,true){crate::diagnostics::error("capture_start_or_finalize",&e);}return;}
+        let replay=match load(source){Ok(r)=>r,Err(e)=>{crate::diagnostics::error("replay_load",&e);return;}};let mut session=Session::new(replay,None);
+        *output.lock().unwrap()=Some(session.replay.meter.snapshot());
+        while let Ok(c)=rx.recv(){let ack=session.command(c);crate::diagnostics::command(&ack);if ack_tx.send(ack).is_err(){break;}}
     }).map_err(|e|e.to_string())?;
     unsafe {
         SetProcessDpiAwarenessContext(-4isize as Handle);let instance=GetModuleHandleW(null());let name=wide("MabiRustMeter");let icon=LoadIconW(instance,1usize as *const u16);
@@ -353,7 +352,7 @@ fn run_inner(source:Source,smoke_report:Option<std::path::PathBuf>)->Result<()> 
         let child=|class:&str,text:&str,id:usize,style:u32|CreateWindowExW(0,wide(class).as_ptr(),wide(text).as_ptr(),0x50010000|style,0,0,50,30,h,id as Handle,instance,null_mut());
         if icon.is_null(){DestroyWindow(h);return Err("Embedded application icon failed to load".into());}
         let smoke=smoke_report.map(|report|Smoke{stage:0,started:std::time::Instant::now(),report,self_key:None});
-        let mut state=Box::new(State{commands:tx,acks:ack_rx,latest,snapshot:None,status:"Starting...".into(),command_id:0,encounters:Vec::new(),encounter_combo:child("COMBOBOX","",4,0x00200003),search:child("EDIT","",6,0x80),idle:child("EDIT","15",7,0x2000),filter:String::new(),target_scroll:0,topmost:false,dpi:GetDpiForWindow(h).max(96),font:null_mut(),edit_brush:CreateSolidBrush(rgb(28,38,48)),smoke,buffer:BackBuffer::default()});
+        let mut state=Box::new(State{commands:tx,acks:ack_rx,latest,snapshot:None,command_id:0,encounters:Vec::new(),encounter_combo:child("COMBOBOX","",4,0x00200003),search:child("EDIT","",6,0x80),idle:child("EDIT","15",7,0x2000),filter:String::new(),target_scroll:0,topmost:false,dpi:GetDpiForWindow(h).max(96),font:null_mut(),edit_brush:CreateSolidBrush(rgb(28,38,48)),smoke,buffer:BackBuffer::default()});
         CONTROL_BRUSH.with(|brush|brush.set(state.edit_brush));
         SendMessageW(state.search,0x1501,1,wide("Search targets").as_ptr() as isize);state.font(h);SetWindowLongPtrW(h,-21,(&mut *state as *mut State) as isize);SetTimer(h,1,40,null());ShowWindow(h,5);
         let mut message:Message=std::mem::zeroed();loop{let result=GetMessageW(&mut message,null_mut(),0,0);if result==0{break;}if result<0{return Err("Native message loop failed".into());}TranslateMessage(&message);DispatchMessageW(&message);}

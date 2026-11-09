@@ -33,7 +33,7 @@ fn prefix()->Character { Character::score2_personal_prefix(&0x1122334455667788u6
     let selected=session.replay.meter.snapshot().rows[0].key;
     let ack=session.command(Command { id:7,observed_revision:0,encounter:1,action:Action::AssignSelf(Some(selected)) });
     assert!(ack.applied);assert!(ack.persistence.unwrap().is_ok());assert_eq!(ack.snapshot.last_command,7);
-    assert_eq!(ack.snapshot.self_binding.key,Some(selected));assert!(ack.snapshot.rows.iter().any(|r|r.is_self && r.label.starts_with("<ME>")));
+    assert_eq!(ack.snapshot.self_binding.key,Some(selected));assert!(ack.snapshot.rows.iter().any(|r|r.is_self && r.label.starts_with("<YOU>")));
     let value:serde_json::Value=serde_json::from_slice(&std::fs::read(&file.0).unwrap()).unwrap();
     assert_eq!(value["operator_receipt"]["actor"].as_u64(),Some(selected.actor as u64));
     assert_eq!(value["operator_receipt"]["command"].as_u64(),Some(7));

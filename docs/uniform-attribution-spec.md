@@ -1,15 +1,59 @@
 # Uniform packet attribution contract
 
-2026-11-09. Published release 0.2.6 / Windows 0.2.6.0 / capture ABI 2.
-The user-approved v0.2.4, v0.2.5 and v0.2.6 prereleases are published and their downloads
-hash-verified. That publication authority is fulfilled; it does not authorize a
-future release. See AGENTS.md for exact release commits, artifacts and evidence.
-Damage interpretation preserves released v0.2.3 and remade v0.2.4 behavior. Explicit
+2026-11-15. Revision 0.2.7 / Windows 0.2.7.0 / capture ABI 2.
+The user authorized the measured attribution correction, revision bump and release.
+See AGENTS.md for exact release commits, artifacts and evidence. Versions 0.2.3
+through 0.2.6 retain their historical damage-equivalence guarantees; 0.2.7 changes
+only explicit source interpretation under the exact hit rule below. Explicit
 and implicit are evidence categories, not main-versus-other actor categories.
 An explicit record cannot exclude its actor's other damage or identify local self.
 Main selection cannot determine packet eligibility. Raw amount and HP-effective
 impact remain distinct. No release/build authority permits live capture or stopping
 an app. Keep detailed domain findings local and limit claims to retained evidence.
+
+## Exact hit source interpretation, 0.2.7
+
+A damage floater's actor field is retained as wire evidence; it is not always the
+attacker identified by the corresponding hit. Resolve this before immutable credit
+publication, using the same rule for every skill and actor. Do not blacklist a
+friendly-targeting skill: one ability can produce both friendly and hostile hits.
+A friendly use that cannot damage must create neither hostile attack activity nor
+damage credit merely because another target loses HP nearby.
+
+Source replacement requires a positive canonical same-incarnation HP decline in
+the same process, directional context and continuity. Exactly one complete hit
+presentation must immediately follow that HP observation. The first complete
+damage floater must follow the presentation within eight directional messages and
+100 ms of the HP observation, without an intervening same-target HP update.
+The known layouts, identical seven flag bytes, finite positive raw amount equal
+to the HP decline, and zero auxiliary impact field must all agree. Both differing
+actors must currently be nonconflicting confirmed Players, and both source/target
+pairs must satisfy the shared no-friendly-fire predicate. Only then does the hit's
+actor supply the damage source. Names, skill/effect keys, self selection and the
+desired ranking are not predicates. Unmatched evidence retains existing behavior.
+
+Preserve original actor fields, raw quantity, flags, target and capture coordinates
+in wire diagnostics; record the interpreted source separately. This does not
+create another damage record or HP obligation. Derived source bindings never
+train the damage model or establish terminal-overkill source proof. Late evidence
+cannot rewrite committed damage; delivery retries remain idempotent. Unknown,
+ambiguous, extended-layout, zero-impact, friendly and cross-boundary evidence
+cannot establish this binding. Existing activity and inference rules still apply
+independently to supported hostile observations.
+
+The binder retains at most 128 target cells and 64 audit bindings (42,608 bytes).
+Pressure removes binding coverage, never damage obligations. Clear pending cells
+on loss, context/process replacement, inference reset and target quarantine.
+Its storage is included in the combined 9,919,144-byte inference ceiling.
+Release acceptance compares every raw/HP observation and full HP interval stream,
+all inferred allocations, explicit quantities and flags, accounting dispositions
+and model state against 0.2.6. Intentional explicit source differences must equal
+the bindings in every actor/target view and in skill amount/origin aggregates.
+Existing ability matching and relationship bookkeeping follow the interpreted
+source. Retain and review resulting skill labels, relationship counters and
+association-reason differences; they cannot hide changed interval quantities,
+inferred recipients or accounting dispositions. The reported original encounter must regain the game's observed
+top-three order in both combined and boss views while conserving both totals.
 
 ## Plain Hits display without damage changes
 
@@ -30,7 +74,7 @@ without inferred credit are not newly reconstructed by this change.
 This is the chosen best estimate, not proof of universal physical multiplicity.
 The offline audit remains evidence about competing notification interpretations;
 packet identity and allocation count do not establish physical hit identity.
-All retained inputs must preserve parsed quantities, source/target/skill/origin
+For the historical Hits-only change, all retained inputs must preserve parsed quantities, source/target/skill/origin
 attribution, HP reconciliation and unattributed amounts/causes. Equal grand totals
 alone are insufficient. Validate full streams and existing audits, excluding only
 new count metadata/resource fields and label formatting. Estimates never train.
@@ -160,7 +204,7 @@ preview/scratch. Attribution retains 512 side records, 1,024 activity relationsh
 Existing bounded Combat/Timeline/model and 512 pending ability refinements remain.
 The post-commit hit counter adds fixed limits of 1,024 seen-observation rows and
 1,024 fallback keys. Its conservative ceiling is 204,880 bytes, included in the
-combined 9,876,536-byte inference ceiling. Neither is a whole-process RSS bound;
+combined 9,919,144-byte inference ceiling, including the hit source binder. Neither is a whole-process RSS bound;
 recording, transport/identity diagnostics and downstream aggregates are separate.
 Pressure may coarsen target/time/ability/flags/hit count, retaining source and
 origin in delivery debt. A final storage-capacity failure has a separate counted

@@ -16,6 +16,7 @@ pub mod hp_wire;
 pub mod hp_evidence;
 pub mod damage_wire;
 pub mod combat;
+pub mod hit_source;
 
 pub type Result<T> = std::result::Result<T, String>;
 

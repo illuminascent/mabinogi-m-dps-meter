@@ -1,12 +1,13 @@
 # Mabinogi Mobile DPS meter
 
-Latest prerelease: [v0.2.6](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.6).
-Version **0.2.6 / Windows 0.2.6.0 / capture ABI 2**. Compact encounter recordings
-preserve raw research evidence and session replay. Hits includes inferred attacks;
-damage interpretation preserves v0.2.3 behavior. See [the Rust guide](native/README.md)
+Latest prerelease: [v0.2.7](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.7).
+Version **0.2.7 / Windows 0.2.7.0 / capture ABI 2**. Corrects damage source attribution
+when an exact HP decline and hit identify a different attacker from the damage
+floater. The rule works per hit and needs no skill names or IDs. Compact encounter
+recordings and inferred Hits remain supported. See [the Rust guide](native/README.md)
 and [attribution contract](docs/uniform-attribution-spec.md).
 Download `mabi-meter.exe` and `SHA256SUMS.txt` from the release page. Releases 0.2.4
-through 0.2.6 contain the meter and its checksum. The unchanged standalone research
+through 0.2.7 contain the meter and its checksum. The unchanged standalone research
 tool is available from [v0.2.3](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.3).
 
 A standalone Rust DPS meter for the Japanese Windows client. It passively reads

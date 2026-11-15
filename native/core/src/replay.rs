@@ -14,6 +14,7 @@ pub struct Evidence {
     pub flow: Flow,pub payload: Vec<u8>,pub payload_length: usize,pub decoded: bool,
 }
 pub struct Replay {
+    pub hit_source:crate::hit_source::HitSource,
     pub hit_counter:crate::hit_count::HitCounter,
     pub damage_wire:crate::damage_wire::Survey,
     pub semantic_error:Option<String>,
@@ -42,12 +43,13 @@ pub struct Replay {
 }
 impl Replay {
     pub fn new(aligned: bool) -> Self {
-        Self { hit_counter:crate::hit_count::HitCounter::default(),damage_wire:crate::damage_wire::Survey::default(),semantic_error:None,hp_evidence:crate::hp_evidence::Ledger::default(),protected_hp:crate::protected_hp::Decoder::default(),protected_hp_samples:VecDeque::new(),protected_hp_evictions:0,protected_hp_seeds:VecDeque::new(),use_clock_bounds:true,explicit_origins:BTreeMap::new(),explicit_origin_examples:VecDeque::new(),numeric:crate::numeric::Numeric::default(),combat:combat::Combat::default(),timeline:combat::Timeline::default(),last_clock:BTreeMap::new(),roster_revision:u64::MAX,pending_skills:VecDeque::new(),meter: Meter::default(),diagnostics: Diagnostics::default(),segments: 0,frames: 0,
+        Self { hit_source:crate::hit_source::HitSource::default(),hit_counter:crate::hit_count::HitCounter::default(),damage_wire:crate::damage_wire::Survey::default(),semantic_error:None,hp_evidence:crate::hp_evidence::Ledger::default(),protected_hp:crate::protected_hp::Decoder::default(),protected_hp_samples:VecDeque::new(),protected_hp_evictions:0,protected_hp_seeds:VecDeque::new(),use_clock_bounds:true,explicit_origins:BTreeMap::new(),explicit_origin_examples:VecDeque::new(),numeric:crate::numeric::Numeric::default(),combat:combat::Combat::default(),timeline:combat::Timeline::default(),last_clock:BTreeMap::new(),roster_revision:u64::MAX,pending_skills:VecDeque::new(),meter: Meter::default(),diagnostics: Diagnostics::default(),segments: 0,frames: 0,
             streams: BTreeMap::new(),connections: BTreeMap::new(),next_lineage:0,fins:BTreeMap::new(),syns: BTreeMap::new(),
             last_timestamp: None,evidence: VecDeque::new(),frame_history: VecDeque::new(),history_bytes: 0,
             aligned,finished: false,buffered: 0,health:crate::health::Health::default(),process:0,continuities:BTreeMap::new(),context_orders:BTreeMap::new(),live_scope:false }
     }
     fn invalidate_context(&mut self,context:u64){
+        self.hit_source.clear_context(context);
         self.revalidate_damage_support();
         *self.continuities.entry(context).or_default()+=1;
         self.protected_hp.mark_conditional(context);
@@ -64,6 +66,7 @@ impl Replay {
         self.revalidate_damage_support();
         let s = match input {
             Input::Loss { code,reset } => {
+                self.hit_source.clear();
                 self.diagnostics.report(&code); self.meter.event(Event::Gap)?;
                 for epoch in self.continuities.values_mut(){*epoch+=1;}self.health.clear_with_model(&mut self.combat.damage_model);self.drain_assignments()?;self.combat.clear();self.timeline.clear();self.last_clock.clear();
                 for context in self.continuities.keys(){self.protected_hp.mark_conditional(*context);}
@@ -195,6 +198,7 @@ impl Replay {
                         self.note_pair_roles(source,target,at);
                         if !self.meter.registry.damage_eligible(source,target){self.diagnostics.report("friendly_fire_attack_claim_rejected");return Ok(());}
                         let attack=Attack{source,target,key1:a.key1,key2:a.key2,meta:a.meta,at};
+                        self.hit_source.presentation(&attack,&frame.payload);
                         self.health.attack(attack.clone())?;self.combat.attack(attack);self.meter.activity(source,target,timestamp_ns);
                     },_=>self.diagnostics.report("payload_rejected")
                 }}
@@ -379,6 +383,7 @@ impl Replay {
     fn hp_quarantine(&mut self,context:u64,binding:u64,actor:Option<u64>,discard_iv:bool){
         if let Some(actor)=actor.filter(|a|*a>0 && *a<=u32::MAX as u64){
             if let Some(target)=self.meter.registry.current_key(self.process,binding,actor as u32){
+                self.hit_source.clear_target(target);
                 self.health.clear_target_with_model(context,target,&mut self.combat.damage_model);
                 self.hp_evidence.break_target(context,target);
                 if discard_iv{self.protected_hp.forget_at(context,target);self.hp_evidence.forget(context,target);}
@@ -398,11 +403,12 @@ impl Replay {
         let local_prior=self.hp_evidence.observations.back().and_then(|o|o.previous);
         let decision=self.numeric.observe(target,wire,hp,at,local_prior);
         match decision.disposition{
-            crate::numeric::Disposition::Sentinel=>{self.hp_evidence.outcome(at.frame,"MAX sentinel; finite comparisons and obligations retained");self.health.sentinel(target,at);return Ok(());}
-            crate::numeric::Disposition::ParallelOverlap=>{self.diagnostics.report("parallel_hp_observation_already_covered");self.hp_evidence.outcome(at.frame,"parallel overlapping HP observation; unique lower endpoints remain attributable");return Ok(());}
+            crate::numeric::Disposition::Sentinel=>{self.hit_source.clear_target(target);self.hp_evidence.outcome(at.frame,"MAX sentinel; finite comparisons and obligations retained");self.health.sentinel(target,at);return Ok(());}
+            crate::numeric::Disposition::ParallelOverlap=>{self.hit_source.clear_target(target);self.diagnostics.report("parallel_hp_observation_already_covered");self.hp_evidence.outcome(at.frame,"parallel overlapping HP observation; unique lower endpoints remain attributable");return Ok(());}
             _=>(),
         }
         self.hp_evidence.outcome(at.frame,"numeric HP admitted to mandatory attribution seam");
+        self.hit_source.hp(target,hp,at,decision.previous);
         self.health.accept_numeric(target,hp,at,decision.previous,may_train && !decision.uncertain);
         Ok(())
     }
@@ -459,6 +465,7 @@ impl Replay {
                 self.hp_numeric(target,hp,at,if protected{"protected update"}else{"plain update"})?;
             }
             Err(error)=>{
+                self.hit_source.clear_target(target);
                 self.health.clear_target_with_model(at.context,target,&mut self.combat.damage_model);
                 self.hp_evidence.break_target(at.context,target);
                 self.hp_evidence.outcome(at.frame,&format!("HP decode {error:?}; raw retained"));
@@ -574,14 +581,16 @@ impl Replay {
         let binding=if self.live_scope{self.meter.binding}else{(lineage<<32)|self.meter.binding};
         let target_actor=u32::try_from(fields.target_prefix).ok().filter(|n|*n!=0);
         let target=target_actor.map(|actor|self.observed_entity(binding,actor,at)).unwrap_or(identity::EntityKey{process:self.process,binding,actor:0,generation:0});
-        if fields.raw_amount==u64::MAX{self.health.sentinel(target,at);self.diagnostics.report("damage_non_numeric_sentinel");return Ok(());}
+        if fields.raw_amount==u64::MAX{self.hit_source.floater(None,target,&fields,at,&self.meter.registry);self.health.sentinel(target,at);self.diagnostics.report("damage_non_numeric_sentinel");return Ok(());}
         self.sync_roster(at);
         let source=u32::try_from(fields.source_prefix).ok().filter(|n|*n!=0).map(|actor|self.observed_entity(binding,actor,at));
+        let binding=self.hit_source.floater(source,target,&fields,at,&self.meter.registry);
         if let Some(source)=source{
-            self.note_pair_roles(source,target,at);
+            let credited_source=binding.map_or(source,|b|b.hit_actor);
+            self.note_pair_roles(credited_source,target,at);
             let role=if self.meter.registry.self_key==Some(source){"main character"}else if self.meter.registry.is_self_source(source){"owned main-character entity"}else if self.meter.registry.self_key.is_none(){"self unresolved at packet time"}else{"other source at packet time"};
             *self.explicit_origins.entry(role).or_default()+=1;
-            self.health.explicit_fields(source,target,fields.raw_amount,fields.hp_impact_candidate(),fields.raw_flags,at)?;
+            self.health.explicit_fields_with_source_proof(credited_source,target,fields.raw_amount,fields.hp_impact_candidate(),fields.raw_flags,at,binding.is_none())?;
         }else{
             *self.explicit_origins.entry("raw source requires real actor fallback").or_default()+=1;
             self.health.unbound_explicit_fields(target,fields.raw_amount,fields.hp_impact_candidate(),fields.raw_flags,at)?;
@@ -667,7 +676,7 @@ impl Replay {
         if self.health.attribution.queued_len()==0 && self.health.attribution.owed_amount()>0{self.publish_credits(true)?;}
         if self.health.attribution.queued_len()>0 || self.health.attribution.owed_amount()>0{return Err("credit delivery remains pending; measurement boundary retained".into());}Ok(())
     }
-    pub fn reset_inference(&mut self){self.health.clear_with_model(&mut self.combat.damage_model);if self.publish_credits(true).is_err(){self.diagnostics.report("credit_delivery_pending_retry");}self.hp_evidence.partition();self.combat.attacks.clear();}
+    pub fn reset_inference(&mut self){self.health.clear_with_model(&mut self.combat.damage_model);if self.publish_credits(true).is_err(){self.diagnostics.report("credit_delivery_pending_retry");}self.hp_evidence.partition();self.combat.attacks.clear();self.hit_source.clear();}
     /// For an independently verified room transition in the same run. No JP
     /// scene marker is sufficient to invoke this. Preserve actors/participants,
     /// ownership and decryption keys while ending transient causal continuity.
@@ -681,6 +690,7 @@ impl Replay {
     }
     pub fn process_replacement(&mut self,epoch:u64)->Result<()> {
         self.commit_pending()?;
+        self.hit_source.clear();
 
         self.protected_hp.clear();
         self.hp_evidence.clear();
@@ -731,6 +741,7 @@ impl Replay {
             "disabled_adapters": ["JP20344/20552 transitions","unseen JP appearance profiles","unvalidated periodic damage ticks","universal VFX damage matching"] });
         audit["hp_evidence"]=self.hp_evidence.audit();
         audit["damage_wire_fields"]=self.damage_wire.audit();
+        audit["hit_source_binding"]=self.hit_source.audit();
         audit["assignment_resources"]=self.health.resource_summary();
         audit["assignment_dependencies"]=self.assignment_storage();
         audit["numeric_observations"]=self.numeric.audit();
@@ -755,7 +766,7 @@ impl Replay {
         let output=health["returned_output_ceiling_bytes"].as_u64().unwrap_or(0) as usize;
         let allocation_headroom=256*1024;
         let pending_skill_ceiling=PENDING_SKILLS*(std::mem::size_of::<(Hit,Stamp,crate::meter::HitAssignment)>()+128);
-        let ceiling=crate::hit_count::HitCounter::ceiling_bytes()+health_ceiling+scratch+output+self.combat.assignment_ceiling_bytes()+self.timeline.assignment_ceiling_bytes()+self.damage_wire.owned_bytes()+crate::numeric::Numeric::ceiling_bytes()+pending_skill_ceiling+allocation_headroom;
+        let ceiling=crate::hit_source::HitSource::ceiling_bytes()+crate::hit_count::HitCounter::ceiling_bytes()+health_ceiling+scratch+output+self.combat.assignment_ceiling_bytes()+self.timeline.assignment_ceiling_bytes()+self.damage_wire.owned_bytes()+crate::numeric::Numeric::ceiling_bytes()+pending_skill_ceiling+allocation_headroom;
         json!({"hit_count_ceiling_bytes":crate::hit_count::HitCounter::ceiling_bytes(),"hit_count_owned_bytes":self.hit_counter.owned_bytes(),"conservative_total_ceiling_bytes":ceiling,"allocation_headroom_bytes":allocation_headroom,"budget_bytes":10*1024*1024,"within_budget":health_ceiling>0 && ceiling<=10*1024*1024,"bound_scope":"finite inference/obligation/publication capacities; independent meter results and raw recording excluded","combat_owned_bytes":self.combat.assignment_owned_bytes(),"combat_ceiling_bytes":self.combat.assignment_ceiling_bytes(),"timeline_conservative_bytes":self.timeline.assignment_owned_bytes(),"timeline_ceiling_bytes":self.timeline.assignment_ceiling_bytes(),"raw_damage_ring_owned_bytes":self.damage_wire.owned_bytes(),"pending_skill_ceiling_bytes":pending_skill_ceiling,"pending_skill_owned_bytes":self.pending_skills.capacity()*(std::mem::size_of::<(Hit,Stamp,crate::meter::HitAssignment)>()+128),"numeric_owned_bytes":self.numeric.owned_bytes(),"numeric_ceiling_bytes":crate::numeric::Numeric::ceiling_bytes(),"attribution_owned_bytes":self.health.attribution.owned_bytes(),"attribution_ceiling_bytes":crate::attribution::Attribution::ceiling_bytes()})
     }
 }

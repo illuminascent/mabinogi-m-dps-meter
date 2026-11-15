@@ -28,7 +28,7 @@ impl Bounds{fn compatible(self,b:Self)->bool{
     match(self.lower,self.upper,b.lower,b.upper){(Some(a),Some(au),Some(b),Some(bu))=>a.epoch==au.epoch && a.epoch==b.epoch && b.epoch==bu.epoch && a.ticks<=bu.ticks.saturating_add(1) && b.ticks<=au.ticks.saturating_add(1),_=>true}
 }}
 #[derive(Clone)]
-enum Kind{Attack(Attack),Explicit{source:EntityKey,raw:u64,impact:Option<u64>,flags:[u8;7]}}
+enum Kind{Attack(Attack),Explicit{source:EntityKey,raw:u64,impact:Option<u64>,flags:[u8;7],direct_source:bool}}
 #[derive(Clone)]
 struct Fact{id:u64,at:Stamp,available:u64,kind:Kind,bounds:Bounds}
 struct OrphanClaim{target:EntityKey,fact:Fact}
@@ -69,7 +69,7 @@ impl Health{
     pub fn unbound_explicit(&mut self,target:EntityKey,raw:u64,flags:[u8;7],at:Stamp)->Result<()>{self.unbound_explicit_fields(target,raw,None,flags,at)}
     pub fn unbound_explicit_fields(&mut self,target:EntityKey,raw:u64,impact:Option<u64>,flags:[u8;7],at:Stamp)->Result<()>{
         let now=self.now(at);let deadline=if self.slots.contains_key(&(at.context,target)){now.saturating_add(self.local_capture_ns).saturating_add(self.retention_ns)}else{0};self.attribution.submit_unbound_explicit_held(target,raw,flags,at,deadline);
-        let kind=Kind::Explicit{source:EntityKey{process:at.process,binding:0,actor:0,generation:0},raw,impact,flags};if self.slots.contains_key(&(at.context,target)){self.push_fact((at.context,target),at,kind);}else{self.retain_orphan(target,at,kind);}
+        let kind=Kind::Explicit{source:EntityKey{process:at.process,binding:0,actor:0,generation:0},raw,impact,flags,direct_source:true};if self.slots.contains_key(&(at.context,target)){self.push_fact((at.context,target),at,kind);}else{self.retain_orphan(target,at,kind);}
         Ok(())
     }
     fn outcome(&mut self,reason:&'static str){*self.outcomes.entry(reason).or_default()+=1;}
@@ -134,13 +134,16 @@ impl Health{
     pub fn attack(&mut self,a:Attack)->Result<()>{if !self.attribution.eligibility(a.source,a.target){self.outcome("forbidden same-side attack excluded");return Ok(());}self.attribution.note_relationship(a.source,a.target,a.at);self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;let key=(a.at.context,a.target);if !self.slots.contains_key(&key){self.outcome("attack without baseline; compact source support retained");return Ok(());}self.push_fact(key,a.at,Kind::Attack(a));Ok(())}
     pub fn explicit(&mut self,source:EntityKey,target:EntityKey,amount:u64,at:Stamp)->Result<()>{self.explicit_fields(source,target,amount,Some(amount),[0;7],at)}
     pub fn explicit_fields(&mut self,source:EntityKey,target:EntityKey,raw:u64,impact:Option<u64>,flags:[u8;7],at:Stamp)->Result<()>{
+        self.explicit_fields_with_source_proof(source,target,raw,impact,flags,at,true)
+    }
+    pub fn explicit_fields_with_source_proof(&mut self,source:EntityKey,target:EntityKey,raw:u64,impact:Option<u64>,flags:[u8;7],at:Stamp,direct_source:bool)->Result<()>{
         let now=self.now(at);let deadline=if self.slots.contains_key(&(at.context,target)){now.saturating_add(self.local_capture_ns).saturating_add(self.retention_ns)}else{0};self.attribution.submit_explicit_held(source,target,raw,flags,at,deadline);self.allocated=self.attribution.settled_inferred;self.unassigned=self.attribution.unattributed_inferred;if !self.attribution.eligibility(source,target){self.outcome("forbidden explicit source; raw observation retained outside attribution");return Ok(());}
         let key=(at.context,target);
         if impact==Some(0){self.outcome("zero HP impact; no positive budget claim");}
-        if !self.slots.contains_key(&key){self.retain_orphan(target,at,Kind::Explicit{source,raw,impact,flags});self.outcome("explicit without baseline; claim retained");return Ok(());}
+        if !self.slots.contains_key(&key){self.retain_orphan(target,at,Kind::Explicit{source,raw,impact,flags,direct_source});self.outcome("explicit without baseline; claim retained");return Ok(());}
         if self.last_committed.get(&key).is_some_and(|old|Self::same(*old,at) && at.timestamp_ns.saturating_sub(old.timestamp_ns)>self.retention_ns){self.late_explicit+=1;self.outcome("explicit beyond retired history");}
         if impact.is_none(){self.outcome("unsupported explicit impact");}
-        self.push_fact(key,at,Kind::Explicit{source,raw,impact,flags});Ok(())
+        self.push_fact(key,at,Kind::Explicit{source,raw,impact,flags,direct_source});Ok(())
     }
     pub fn update(&mut self,target:EntityKey,hp:u64,at:Stamp)->Result<Vec<Estimate>>{self.update_provenanced(target,hp,at,true)}
     /// Canonical numeric ingress. Finite comparison obligations cannot fail
@@ -284,7 +287,7 @@ impl Health{
             if matches.len()==1{let j=matches[0];paired.insert(j);consumed.insert(s.facts[j].id);consumed.insert(zero.id);}
             else if matches.len()>1{ambiguous=true;}
         }
-        for i in &assignment.explicit{let f=&s.facts[*i];consumed.insert(f.id);let Kind::Explicit{source,raw,impact,flags}=&f.kind else{continue;};raw_sum+=*raw as u128;sum+=impact.unwrap_or(*raw) as u128;
+        for i in &assignment.explicit{let f=&s.facts[*i];consumed.insert(f.id);let Kind::Explicit{source,raw,impact,flags,..}=&f.kind else{continue;};raw_sum+=*raw as u128;sum+=impact.unwrap_or(*raw) as u128;
             let mut matching:Vec<_>=assignment.attacks.iter().copied().filter(|j|!paired.contains(j) && match &s.facts[*j].kind{Kind::Attack(a)=>a.meta[..7]==flags[..],_=>false}).collect();
             if matching.iter().any(|j|matches!(&s.facts[*j].kind,Kind::Attack(a) if a.source==*source)){matching.retain(|j|matches!(&s.facts[*j].kind,Kind::Attack(a) if a.source==*source));}
             let pair=if matching.len()==1{Some(matching[0])}else{if matching.len()>1{ambiguous=true;}matching.iter().copied().filter(|j|s.facts[*j].at.order>=f.at.order).min_by_key(|j|s.facts[*j].at.order).or_else(||matching.first().copied())};
@@ -302,7 +305,7 @@ impl Health{
         let terminal_clip=if p.hp_after==0 && !unresolved && !p.sentinel_uncertain && !p.conditional && !ambiguous && !s.truncated && !assignment.batched && assignment.explicit.len()==1 && assignment.attacks.len()==1{
             let f=&s.facts[assignment.explicit[0]];
             match (&f.kind,&s.facts[assignment.attacks[0]].kind){
-                (Kind::Explicit{source,raw,impact:Some(n),flags},Kind::Attack(a)) if *source==a.source && a.meta[..7]==flags[..] && *n>p.amount && *n<=*raw=>Some((f.id,raw-(n-p.amount))),
+                (Kind::Explicit{source,raw,impact:Some(n),flags,direct_source:true},Kind::Attack(a)) if *source==a.source && a.meta[..7]==flags[..] && *n>p.amount && *n<=*raw=>Some((f.id,raw-(n-p.amount))),
                 _=>None,
             }
         }else{None};
@@ -314,7 +317,7 @@ impl Health{
         // Structural witness first, arithmetic check second. Inferred amounts,
         // role disagreements and multiple components are not training truth.
         if !unresolved && !p.clock_uncertain && !p.sentinel_uncertain && !p.conditional && !mismatch && !ambiguous && !s.truncated && assignment.explicit.len()==1 && assignment.attacks.len()==1{
-            if let Kind::Explicit{source,impact:Some(n),flags,..}=&s.facts[assignment.explicit[0]].kind{if let Kind::Attack(a)=&s.facts[assignment.attacks[0]].kind{if *n>0 && *n==p.amount && *source==a.source && a.meta[..7]==flags[..] && a.key1!=0{model.observe_clean(*source,key.1,a.key1,a.key2,*flags,*n);self.outcome("clean impact training anchor");}}}
+            if let Kind::Explicit{source,impact:Some(n),flags,direct_source:true,..}=&s.facts[assignment.explicit[0]].kind{if let Kind::Attack(a)=&s.facts[assignment.attacks[0]].kind{if *n>0 && *n==p.amount && *source==a.source && a.meta[..7]==flags[..] && a.key1!=0{model.observe_clean(*source,key.1,a.key1,a.key2,*flags,*n);self.outcome("clean impact training anchor");}}}
         }
         let mut groups:BTreeMap<(EntityKey,Option<u32>),(f64,bool,Vec<u64>)>=BTreeMap::new();let mut actor_trained:BTreeMap<EntityKey,bool>=BTreeMap::new();let mut templates:BTreeMap<(EntityKey,u32,u32,[u8;7]),f64>=BTreeMap::new();
         for a in attacks{let flags:[u8;7]=a.meta[..7].try_into().unwrap();let(w,trained)=model.weight(a.source,key.1,a.key1,a.key2,flags);let w=w.max(f64::MIN_POSITIVE);let g=groups.entry((a.source,(a.key1!=0).then_some(a.key1))).or_insert((0.0,true,Vec::new()));g.0+=w;g.1&=trained;g.2.push(a.at.frame);*actor_trained.entry(a.source).or_insert(true)&=trained;templates.insert((a.source,a.key1,a.key2,flags),w);}

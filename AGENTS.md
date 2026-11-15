@@ -4,6 +4,49 @@ Updated 2026-11-09, Asia/Tokyo. This is the current handoff; older local plans a
 validation journals are historical. Read [native/README.md](native/README.md) and
 [the attribution contract](docs/uniform-attribution-spec.md) before damage changes.
 
+## Hit source revision 0.2.7, 2026-11-15
+
+The user authorized this attribution patch, revision bump, commit/push and GitHub
+prerelease publication. That scope does not include live capture, stopping apps or
+removing recordings. Version **0.2.7 / Windows 0.2.7.0 / capture ABI 2** replaces
+an explicit damage source only when a complete hit presentation, canonical HP
+decline and damage floater agree on the same individual positive hit. It uses no
+skill/effect IDs, names, actor-specific roles or desired rankings. Friendly hits
+cannot establish hostile activity or this binding; an ability may have both
+friendly and hostile uses. Derived bindings do not train or establish overkill
+source proof. Original wire fields remain in diagnostics. Recording format stays
+compatible with 0.2.6; the distributed research EXE and capture DLL are unchanged.
+
+Acceptance on the original November 15 live encounter restores the observed
+top-three order in both combined and boss views. Boss/all-target totals remain
+54,271,788 / 62,471,841; 128 boss bindings move 758,800 damage between players.
+This verifies the measured discrepancy, not universal physical source decoding.
+Full release checks and source/asset proof are kept ignored under
+`.local/hit-level-release-0.2.7-20261115/`. Rust: 355 private-inclusive tests;
+Windows: 81 native tests; Python: 24 application and 14 offline-observer tests.
+Actual meter/research UI smoke, demo, Windows resources and no-capture system
+check pass. The 128-cell/64-audit source binder adds 42,608 bytes; the combined
+inference ceiling is 9,919,144 bytes (<10 MiB). Count caches remain unchanged.
+
+The full retained corpus comparison passed on 12 inputs: 4,682,954 frames,
+176,148 HP observations and 159,517 HP intervals. All explicit quantity/flag/target
+fields and all inferred allocations are unchanged. Exactly 1,882 source bindings
+explain every actor/target view delta and skill quantity/origin projection. The 16
+association-reason changes preserve every interval quantity and recipient; all
+skill-match differences involve affected hits. Relationship/resource counter
+changes are separately retained in the application review. Inputs include nine
+research sessions, the overlapping world snapshot and two live session snapshots;
+partial replay covers retained bytes, not an absent tail. This is not 12 independent
+accuracy replications. Evidence: `acceptance.json`, `corpus.json`,
+`application-projection-review.json`, `raid.json` and `source-proof.json` in the
+release workbench above.
+
+The candidate meter SHA256 is `7789f3e3c3a0a6dea079aad091fee73467bd3f46154c5d8865cc440140fadac6`.
+The 0.2.6 published artifacts and equivalence reports below remain historical
+baselines, not the current 0.2.7 damage interpretation. The pre-existing local
+research-direction edits and `native/RESEARCH.md` are preserved separately from
+this release's source changes.
+
 ## Published releases and authority
 
 | Prerelease | Runtime source commit | Meter SHA256 |

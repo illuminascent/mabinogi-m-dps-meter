@@ -19,6 +19,8 @@ fn at(order:u64)->Stamp{Stamp{process:0,context:1,continuity:0,frame:order,order
 fn allocator_requested_peak_includes_packet_dependencies_scratch_and_mass_output(){
     let baseline=LIVE.load(Ordering::Relaxed);PEAK.store(baseline,Ordering::Relaxed);
     let mut h=Health::default();let mut c=Combat::default();let mut timeline=Timeline::default();let mut wire=Survey::default();let mut numeric=Numeric::default();
+    // The hit binder reserves both fixed-capacity buffers up front.
+    let hit_source=mabi_meter_core::hit_source::HitSource::default();
     for actor in 1..=MAX_SLOTS as u32{h.update(key(actor),10000,at(0)).unwrap();numeric.observe(key(actor),actor as u64,10000,at(0),None);}
     // All global interval/fact slots active at once. Four separately observed
     // components per budget,32 budgets per target,32 targets.
@@ -64,5 +66,5 @@ fn allocator_requested_peak_includes_packet_dependencies_scratch_and_mass_output
     let contract=Replay::new(false).assignment_storage();assert_eq!(contract["within_budget"],true,"{contract}");
     println!("{}",serde_json::json!({"allocator_requested_peak_bytes":measured,"mass_1024_budget_expiry_service_ns":expiry_ns.to_string(),"full_1024_owed_settlement_service_ns":settlement_ns.to_string(),"wide_512_actor_fallback_service_ns":wide_ns.to_string(),"output_allocations":credit_count,"delivered_amount":delivered.to_string(),"numeric_baselines":numeric.audit()["retained"],"simultaneous_attribution_pressure":full_pressure,"reported_health_peak_bytes":h.resource_summary()["peak_conservative_resident_bytes"],"storage_contract":contract,"scope":"dedicated simultaneous inference and publication pressure; allocator-requested bytes including transient fallback/output allocations, not whole application RSS"}));
     assert!(measured<10*1024*1024,"actual allocator requests exceeded assignment budget: {measured}");
-    std::hint::black_box((&h,&c,&timeline,&wire,&numeric,&wide,&output));
+    std::hint::black_box((&h,&c,&timeline,&wire,&numeric,&wide,&output,&hit_source));
 }

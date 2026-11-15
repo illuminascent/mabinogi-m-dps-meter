@@ -1,12 +1,20 @@
 # Rust code guide
 
-Release **0.2.6 / Windows 0.2.6.0 / capture ABI 2** adds compact encounter recordings
-and recorded-session replay. Damage results match published 0.2.5 on the ten
-currently available inputs; the earlier 17-input release comparison remains
-historical evidence for 0.2.3 through 0.2.5. Hits uses bounded
-post-commit count metadata. Actor-wide explicit/self exclusion is absent; UI and
-logging improvements from 0.2.4 remain. Read [the handoff](../AGENTS.md) for current
-validation evidence, cleanup policy and scoped publication authority.
+Release **0.2.7 / Windows 0.2.7.0 / capture ABI 2** fixes explicit source
+attribution for an exact individual HP-loss/hit/floater match. It has no skill or
+effect allowlist. Both actors must be current confirmed Players with eligible
+hostile targets; friendly uses cannot supply damaging-hit proof. The original
+wire actor stays in diagnostics, while the matched hit actor receives the credit.
+Derived source bindings never train or establish overkill source proof. See the
+[contract](../docs/uniform-attribution-spec.md#exact-hit-source-interpretation-027).
+The original reported raid now matches the game's observed top-three order in
+combined and boss views, with both damage totals conserved. Private evidence and
+release checks are in `.local/hit-level-release-0.2.7-20261115/`.
+
+Recording and Hits behavior from 0.2.6 remain. The 0.2.6 ten-input equivalence to
+0.2.5 and earlier 17-input comparisons are historical baselines. 0.2.7 intentionally
+changes only qualified explicit source credits. Read [the handoff](../AGENTS.md)
+for current validation evidence and publication status.
 
 Read the [attribution contract](../docs/uniform-attribution-spec.md) before
 changing combat interpretation. The [root README](../README.md) covers use,
@@ -34,6 +42,7 @@ fallback; it cannot reject damage, reselect an actor, delay a lease or prevent A
 | `core/src/damage_wire.rs`, `hp_evidence.rs` | Field retention, acknowledgment counters and diagnostic previews |
 | `core/src/numeric.rs` | Canonical same-object finite HP comparisons |
 | `core/src/identity.rs`, `identity/ownership.rs` | Actor incarnations, identity evidence, ownership and shared damage-side eligibility |
+| `core/src/hit_source.rs` | Bounded exact HP/hit/floater source binding before commit; raw actors retained, no skill/effect allowlist |
 | `core/src/health.rs` | Target-local packet association, explicit/HP reconciliation and clean-anchor admission |
 | `core/src/combat.rs` | Existing action/state/skill evidence, partial clocks and diagnostic impact model |
 | `core/src/attribution.rs` | Sole allocation/fallback, recent attack spans, unattributed causes and acknowledged delivery |
@@ -259,7 +268,7 @@ ordinary synthetic tests do not. Audit and UI smoke output paths must be new.
 System check, demo and UI smoke do not start live capture. Replay exit code 2
 means partial coverage, not necessarily a decoder failure.
 
-The distributed research tool is still v0.2.3; meter releases 0.2.4/0.2.5/0.2.6 contain
+The distributed research tool is still v0.2.3; meter releases 0.2.4/0.2.5/0.2.6/0.2.7 contain
 only the meter and checksums. Rebuilding research from this tree stamps the current
 package version, and does not reproduce the historical asset byte for byte.
 
@@ -318,4 +327,4 @@ hypotheses; unknown physical multiplicity stays unknown. This is offline researc
 tooling; it adds no Python dependency to the meter EXE. The production Hits UI
 uses a separate bounded post-commit counter. Each evidence cache retains at most
 1,024 rows; its conservative ceiling is 204,880 bytes, included in the current
-9,876,536-byte inference ceiling. Display counts never change damage or crit flags.
+9,919,144-byte inference ceiling, including the 42,608-byte hit source binder. Display counts never change damage or crit flags.

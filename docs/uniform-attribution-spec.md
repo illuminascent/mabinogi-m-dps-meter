@@ -1,7 +1,8 @@
 # Uniform packet attribution contract
 
-2026-11-15. Revision 0.2.7 / Windows 0.2.7.0 / capture ABI 2.
-The user authorized the measured attribution correction, revision bump and release.
+2026-11-15. Published release 0.2.7 / Windows 0.2.7.0 / capture ABI 2.
+The user authorized and completed this attribution correction, revision bump and release.
+Publication authority is fulfilled and does not extend to another release.
 See AGENTS.md for exact release commits, artifacts and evidence. Versions 0.2.3
 through 0.2.6 retain their historical damage-equivalence guarantees; 0.2.7 changes
 only explicit source interpretation under the exact hit rule below. Explicit

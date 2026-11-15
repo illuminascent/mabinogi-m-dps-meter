@@ -6,9 +6,9 @@ validation journals are historical. Read [native/README.md](native/README.md) an
 
 ## Hit source revision 0.2.7, 2026-11-15
 
-The user authorized this attribution patch, revision bump, commit/push and GitHub
-prerelease publication. That scope does not include live capture, stopping apps or
-removing recordings. Version **0.2.7 / Windows 0.2.7.0 / capture ABI 2** replaces
+The user authorized and completed this attribution patch, revision bump, commit/
+push and GitHub prerelease publication. This authority is fulfilled; it does not
+authorize further releases, live capture, stopping apps or removing recordings. Version **0.2.7 / Windows 0.2.7.0 / capture ABI 2** replaces
 an explicit damage source only when a complete hit presentation, canonical HP
 decline and damage floater agree on the same individual positive hit. It uses no
 skill/effect IDs, names, actor-specific roles or desired rankings. Friendly hits
@@ -41,7 +41,16 @@ accuracy replications. Evidence: `acceptance.json`, `corpus.json`,
 `application-projection-review.json`, `raid.json` and `source-proof.json` in the
 release workbench above.
 
-The candidate meter SHA256 is `7789f3e3c3a0a6dea079aad091fee73467bd3f46154c5d8865cc440140fadac6`.
+The published meter SHA256 is `7789f3e3c3a0a6dea079aad091fee73467bd3f46154c5d8865cc440140fadac6`.
+Published [v0.2.7](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.7) at runtime commit
+`450b74dafbcd10af7b3ed8646459f12b052d3f6a`. Both anonymous asset downloads are hash-verified;
+older tags/releases are unchanged. The canonical `dist/mabi-meter.exe` and
+versioned `dist/mabi-meter-0.2.7.exe` match the hash above. The still-running 0.2.6
+image is preserved at `dist/mabi-meter-running-0.2.6.exe`, with a backup under the
+release workbench; restart the meter to activate 0.2.7. No user process was stopped.
+Publication and local promotion evidence: `commit.json`, `publication.json`,
+`canonical.json` and `preserved-user-work.json` in the release workbench above.
+
 The 0.2.6 published artifacts and equivalence reports below remain historical
 baselines, not the current 0.2.7 damage interpretation. The pre-existing local
 research-direction edits and `native/RESEARCH.md` are preserved separately from
@@ -54,6 +63,7 @@ this release's source changes.
 | [v0.2.4](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.4) | `a3719ed65ab2eb2b2cd6dda1efce4985e69da029` | `025c4c33c4e08eef459f9d6d94a906f519cc4919e6440e404d3a03449e4b3ba3` |
 | [v0.2.5](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.5) | `a7f62f1f3d9650ed740999d5a9717482c35ed577` | `6792071692d4842ed9f4e0c59e49f35cbf7dc8825f49a2e63e10080fd3227547` |
 | [v0.2.6](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.6) | `5149d4e3154367b927da2359743dae4e650d3520` | `30c6dbbf87ec1466a0a5940a18edd658c4d3246701ff3a6c11a8f082e07daf14` |
+| [v0.2.7](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.7) | `450b74dafbcd10af7b3ed8646459f12b052d3f6a` | `7789f3e3c3a0a6dea079aad091fee73467bd3f46154c5d8865cc440140fadac6` |
 
 The frozen numerical baseline is released v0.2.3 at
 `3e6124254fd8b636dd8717c440cfe79ca7633e3e`, meter SHA256

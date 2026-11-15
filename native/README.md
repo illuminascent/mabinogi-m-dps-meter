@@ -7,6 +7,8 @@ hostile targets; friendly uses cannot supply damaging-hit proof. The original
 wire actor stays in diagnostics, while the matched hit actor receives the credit.
 Derived source bindings never train or establish overkill source proof. See the
 [contract](../docs/uniform-attribution-spec.md#exact-hit-source-interpretation-027).
+Published [v0.2.7](https://github.com/illuminascent/mabinogi-m-dps-meter/releases/tag/v0.2.7) at runtime commit
+`450b74dafbcd10af7b3ed8646459f12b052d3f6a`; anonymous downloads are hash-verified.
 The original reported raid now matches the game's observed top-three order in
 combined and boss views, with both damage totals conserved. Private evidence and
 release checks are in `.local/hit-level-release-0.2.7-20261115/`.
